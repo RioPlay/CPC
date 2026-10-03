@@ -22,6 +22,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Regression suite
         run: python tests/test_cpc.py
+      - name: Receiver security regressions
+        run: python tests/test_security.py
       - name: CLI smoke test
         run: python bin/cpc.py --version
       - name: Verify bundled capsules

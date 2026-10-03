@@ -505,6 +505,8 @@ Readers MUST enforce configurable limits for at least:
 
 A reader MUST fail closed on exceeded limits.
 
+The reference receiver's numeric ceilings and enforcement behavior are published in [SECURITY.md](../SECURITY.md#reference-implementation-limits). They are implementation policy rather than intrinsic wire-format maxima. It limits expanded output during decoding and uses a separate LZMA decoder-memory ceiling. It accepts a single complete XZ stream without trailing payload data. No expansion-ratio threshold is defined: receivers must bound absolute resource use even for highly compressible input.
+
 ---
 
 ## 16. Source consistency

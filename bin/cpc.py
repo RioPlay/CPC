@@ -61,6 +61,7 @@ EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
 MAX_CARRIER = 512 * 1024 * 1024
 MAX_COMPRESSED = 384 * 1024 * 1024
 MAX_TAR = 2 * 1024 * 1024 * 1024
+MAX_LZMA_MEMORY = 128 * 1024 * 1024
 MAX_MEMBERS = 200_000
 MAX_FILE = 1024 * 1024 * 1024
 MAX_TOTAL = 2 * 1024 * 1024 * 1024
@@ -377,7 +378,9 @@ def parse_capsule(path):
     if os.path.getsize(path) > MAX_CARRIER:
         raise CPCError("CARRIER_LIMIT")
     with open(path, "rb") as fh:
-        data = fh.read()
+        data = fh.read(MAX_CARRIER + 1)
+    if len(data) > MAX_CARRIER:
+        raise CPCError("CARRIER_LIMIT")
     try:
         md = data.decode("utf-8")
     except UnicodeDecodeError:
@@ -396,8 +399,12 @@ def parse_capsule(path):
     if md.count(START) != 1 or md.count(END) != 1:
         raise CPCError("INVALID_MARKERS")
     a = md.index(START) + len(START)
-    b = md.index(END, a)
+    b = md.index(END)
+    if b < a:
+        raise CPCError("INVALID_MARKERS")
     payload_text = "".join(md[a:b].split())
+    if len(payload_text) > 4 * ((MAX_COMPRESSED + 2) // 3):
+        raise CPCError("COMPRESSED_LIMIT")
     try:
         packed = base64.b64decode(payload_text, validate=True)
     except Exception:
@@ -408,11 +415,18 @@ def parse_capsule(path):
         raise CPCError("HASH_MISMATCH")
 
     try:
-        raw = lzma.decompress(packed, format=lzma.FORMAT_AUTO)
-    except Exception as e:
+        decoder = lzma.LZMADecompressor(
+            format=lzma.FORMAT_XZ, memlimit=MAX_LZMA_MEMORY)
+        # Request at most one byte beyond the ceiling, not unlimited output.
+        raw = decoder.decompress(packed, max_length=MAX_TAR + 1)
+    except lzma.LZMAError as e:
         raise CPCError(f"DECOMPRESSION_FAILED: {e}")
     if len(raw) > MAX_TAR:
         raise CPCError("TAR_LIMIT")
+    if not decoder.eof:
+        raise CPCError("DECOMPRESSION_FAILED: incomplete XZ stream")
+    if decoder.unused_data:
+        raise CPCError("DECOMPRESSION_FAILED: trailing data or multiple XZ streams")
     return {
         "version": VERSION,
         "codec": CODEC,
@@ -442,6 +456,7 @@ def validate_archive(raw):
     members = []
     total = 0
     names = set()
+    folded_names = set()
     state = None
     manifest = None
 
@@ -451,15 +466,17 @@ def validate_archive(raw):
         raise CPCError(f"BAD_TAR: {e}")
 
     with tf:
-        all_members = tf.getmembers()
-        if len(all_members) > MAX_MEMBERS:
-            raise CPCError("MEMBER_LIMIT")
-        for m in all_members:
+        for index, m in enumerate(tf):
+            if index >= MAX_MEMBERS:
+                raise CPCError("MEMBER_LIMIT")
             name = m.name.rstrip("/") if m.isdir() else m.name
             safe_member_name(name)
             if name in names:
                 raise CPCError(f"DUPLICATE_MEMBER: {name}")
             names.add(name)
+            if name.casefold() in folded_names:
+                raise CPCError(f"CASE_COLLISION: {name}")
+            folded_names.add(name.casefold())
 
             if not (m.isfile() or m.isdir()):
                 raise CPCError(f"UNSUPPORTED_MEMBER_TYPE: {name}")
@@ -486,6 +503,11 @@ def validate_archive(raw):
         state = parse_state_bytes(read_internal(f"{META_ROOT}/{STATE_NAME}"))
         manifest = read_internal(f"{META_ROOT}/{MANIFEST_NAME}").decode("utf-8")
 
+    root = state.get("root", "")
+    portable_name_check(root)
+    if "/" in root or root.casefold() == META_ROOT.casefold():
+        raise CPCError("INVALID_LOGICAL_ROOT")
+
     # Validate manifest records against archive user members.
     expected = {}
     for line in manifest.splitlines():
@@ -504,6 +526,10 @@ def validate_archive(raw):
         for m in members
         if not (m.name == META_ROOT or m.name.startswith(META_ROOT + "/"))
     }
+    if root not in actual_user or any(
+        path != root and not path.startswith(root + "/") for path in actual_user
+    ):
+        raise CPCError("INVALID_LOGICAL_ROOT")
     if set(expected) != set(actual_user):
         raise CPCError("MANIFEST_MEMBER_MISMATCH")
 

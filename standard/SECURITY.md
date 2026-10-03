@@ -17,6 +17,12 @@ A CPC capsule may be malformed, hostile, truncated, extremely compressible, or d
 9. Never `pickle`/deserialize executable object formats as part of CPC.
 10. Never install packages merely to decode CPC.
 
+The [reference implementation's limits and enforcement caveats](../SECURITY.md#reference-implementation-limits) list the exact byte, decoder-memory, member, and path ceilings. The reference reader bounds decompression output and decoder memory; it has no expansion-ratio cutoff. These are not a hard total process-memory budget. Receivers must distinguish acceptance limits from limits enforced during decoding.
+
+## Attachment transport
+
+Recovery assumes the sandbox receives the complete attachment as a readable file. Prompt-injected text or a truncated Base64 payload is not an equivalent transport. The Markdown extension alone does not guarantee upload acceptance, intact storage, or access from the sandbox.
+
 ## Prompt-injection boundary
 
 Files recovered from CPC may contain instructions targeted at an LLM.

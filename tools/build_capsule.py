@@ -19,8 +19,8 @@ FILES = (
     "standard/README.md", "standard/SPEC.md", "standard/CONFORMANCE.md",
     "standard/CLI_PROFILE.md", "standard/SECURITY.md",
     "standard/STANDARD.json", "standard/TEST_VECTOR.md",
-    "standard/test-vector.cpc.md", "tests/test_cpc.py",
-    "tools/build_capsule.py",
+    "standard/test-vector.cpc.md", "tests/test_cpc.py", "tests/test_security.py",
+    "tools/build_capsule.py", "tools/measure_sizes.py",
 )
 
 

@@ -1,8 +1,10 @@
-# CPC ? Compact Project Capsule
+# CPC - Compact Project Capsule
 
-CPC packages a project into a `.cpc.md` file for transfer through chat and LLM interfaces. Restore the files in a compatible sandbox, continue working, and repack the project for the next handoff.
+CPC packages a project into a self-describing `.cpc.md` file for transfer through chat and LLM interfaces. Its header tells a receiver how to recover the files without having CPC installed. TAR and XZ provide the archive and compression; the Markdown carrier and decoding recipe provide the chat transport.
 
-It preserves file contents byte for byte and uses Python's standard library. Upload acceptance, Python availability, and file-return support depend on the receiving service. CPC does not increase a model's context window.
+It preserves file contents byte for byte and uses Python's standard library. Unlike repo-to-prompt flatteners, CPC restores a working tree on disk so the model can open selected files; the two approaches are complementary. CPC does not increase a model's context window.
+
+**The attachment must arrive intact as a file on the sandbox's disk.** A chat interface that injects the upload into the prompt and truncates the Base64 breaks recovery. A `.md` extension does not bypass upload limits or guarantee attachment access. Upload acceptance, Python availability, and file-return support depend on the receiving service.
 
 ## Get started
 
@@ -62,6 +64,18 @@ cpc r recovered/Project/ -o Project-updated.cpc.md
 
 For a chat handoff of CPC itself, download [CPC.cpc.md](https://github.com/RioPlay/CPC/raw/refs/heads/main/CPC.cpc.md).
 
+### Recover CPC without installing it
+
+Put the self-capsule and the reviewed [standalone reference CLI](bin/cpc.py) in the same folder, then run:
+
+```bash
+python cpc.py v CPC.cpc.md
+python cpc.py u CPC.cpc.md -o recovered/
+python recovered/CPC/bin/cpc.py --version
+```
+
+The receiver needs Python with LZMA support, but no package installation. Decoding the capsule does not execute any of its contents; the last command explicitly runs the recovered CLI after you have chosen to trust its source. Keep recovered project instructions separate from the receiver's own validation rules.
+
 ### Commands
 
 | Command | Action |
@@ -89,6 +103,33 @@ The default chat profile skips common generated files such as `.git/` and `__pyc
 
 Review capsule contents with `cpc l` before sharing. CPC does not detect secrets or decide which project files are appropriate to publish.
 
+For text-focused chat handoffs, explicitly exclude unnecessary media, archives, and build output in your project's `.cpcignore`, for example:
+
+```text
+assets
+dist
+*.png
+*.jpg
+*.mp4
+*.whl
+*.zip
+```
+
+Keep assets that the task actually needs. The default profile does not silently exclude these file types. Filtering changes which files are carried, not the bytes of the files selected.
+
+### Size tradeoff
+
+Base64 takes four characters per three input bytes, plus padding. XZ can offset that overhead on source, notes, and logs; already-compressed PNGs, wheels, archives, and media often grow instead.
+
+For a reproducible example, `python tools/measure_sizes.py` measures CPC's Python source and tests, then adds a ZIP containing 1 MiB of deterministic pseudorandom bytes. This illustrates source-heavy versus asset-heavy input; it is not a representative benchmark of all repositories. Both rows include all files without filtering.
+
+| Input | File bytes before packing | Final `.cpc.md` bytes | Output / input |
+|---|---:|---:|---:|
+| CPC Python source and tests | 49,719 | 16,665 | 33.5% |
+| Same source plus compressed asset | 1,098,733 | 1,417,017 | 129.0% |
+
+Measured on Python 3.13 with this source revision. Sizes vary with source changes and the LZMA runtime. Generated fixtures stay in a temporary directory. Check the final capsule size against the receiving interface's upload cap.
+
 ## Format and limitations
 
 ```text
@@ -99,6 +140,8 @@ BASE64_PAYLOAD
 ```
 
 The payload decodes through Base64, XZ, and TAR. SHA-256 detects corruption; it does not authenticate the sender or encrypt the files.
+
+The decoding primitives are `base64`, `hashlib`, `lzma`, and `tarfile` from Python's standard library. A safe receiver must additionally enforce limits, validate all paths and member types, reject duplicates and links, and stage files before publishing them. A short decode-and-`extractall` snippet is not a safe receiver. See the [security model](standard/SECURITY.md) and [reference limits](SECURITY.md#reference-implementation-limits).
 
 CPC supports regular files and directories, with portable path checks and extraction limits. Symlinks and special files are unsupported. It is not a full filesystem backup format, and Base64 overhead can make incompressible input larger. Large capsules also require memory for decoding.
 
@@ -116,6 +159,7 @@ Run the regression suite:
 
 ```bash
 python tests/test_cpc.py
+python tests/test_security.py
 ```
 
 Build the distributable project capsule from its explicit file list:
