@@ -78,6 +78,11 @@ def main():
         assert (recovered / "src" / "main.py").read_bytes() == b'print("hello")\r\n'
         assert not (recovered / ".DS_Store").exists()
 
+        # The short auto-detect workflow must behave like explicit unpack.
+        automatic = td / "automatic"
+        run(cap, "-o", automatic)
+        assert tree_bytes(automatic / "Project") == tree_bytes(recovered)
+
         # compare equal
         run("c", cap, recovered)
 

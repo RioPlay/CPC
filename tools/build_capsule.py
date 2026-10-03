@@ -20,7 +20,8 @@ FILES = (
     "standard/CLI_PROFILE.md", "standard/SECURITY.md",
     "standard/STANDARD.json", "standard/TEST_VECTOR.md",
     "standard/test-vector.cpc.md", "tests/test_cpc.py", "tests/test_security.py",
-    "tools/build_capsule.py", "tools/measure_sizes.py",
+    "tests/test_streaming.py", "tools/build_capsule.py", "tools/measure_sizes.py",
+    "tools/profile_resources.py",
 )
 
 

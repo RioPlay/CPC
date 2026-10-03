@@ -49,6 +49,12 @@ Pack a project:
 cpc p Project/ -o Project.cpc.md
 ```
 
+Add `--report` to see selected input bytes, final size, and the five largest included files:
+
+```bash
+cpc p Project/ -o Project.cpc.md --report
+```
+
 Verify the capsule and restore it into a separate folder:
 
 ```bash
@@ -93,6 +99,22 @@ The receiver needs Python with LZMA support, but no package installation. Decodi
 
 Existing output is protected by default. Use `-f` to explicitly allow replacement or `-b` to back up existing output.
 
+Repack uses saved workflow settings and performs a full fresh pack. It does not reuse compressed data or create deltas.
+
+### Memory and compression
+
+Packing streams TAR data into XZ and stores the compressed intermediate in a temporary file, then writes Base64 in chunks. Recovery decodes to a temporary XZ file, checks its hash, and decompresses to a temporary TAR before validation and staged extraction. The wire format is unchanged; existing capsules remain readable.
+
+Large payloads no longer need to fit in RAM. Compressor/decoder memory and the file/manifest index still consume memory, so this is not a fixed total-memory guarantee. Temporary disk space is required for compressed and expanded data, plus staged extraction. Temporary intermediates are cleaned up on normal completion and handled errors. A terminated process or power loss can leave staging files behind.
+
+The compression default remains **XZ preset 9**. Use `--preset 6` to try a lower-memory compressor, or `-m` for preset 9 with extreme compression effort. Presets can change output size and runtime; file contents and the CPC format are unchanged. `--preset` and `-m` are mutually exclusive.
+
+```bash
+cpc p Project/ -o Project.cpc.md --preset 6 --report
+```
+
+Use `python tools/profile_resources.py` to compare presets on temporary synthetic text and binary inputs. It reports elapsed time, peak process resident memory, and final size in fresh subprocesses. An optional `--baseline PATH` compares another trusted version of `cpc.py`. No generated corpus or result file is included in the project capsule.
+
 ### File selection
 
 The default chat profile skips common generated files such as `.git/` and `__pycache__/`, and applies patterns in the project's `.cpcignore`.
@@ -125,8 +147,8 @@ For a reproducible example, `python tools/measure_sizes.py` measures CPC's Pytho
 
 | Input | File bytes before packing | Final `.cpc.md` bytes | Output / input |
 |---|---:|---:|---:|
-| CPC Python source and tests | 49,719 | 16,665 | 33.5% |
-| Same source plus compressed asset | 1,098,733 | 1,417,017 | 129.0% |
+| CPC Python source and tests | 64,907 | 20,833 | 32.1% |
+| Same source plus compressed asset | 1,113,921 | 1,421,161 | 127.6% |
 
 Measured on Python 3.13 with this source revision. Sizes vary with source changes and the LZMA runtime. Generated fixtures stay in a temporary directory. Check the final capsule size against the receiving interface's upload cap.
 
@@ -160,6 +182,7 @@ Run the regression suite:
 ```bash
 python tests/test_cpc.py
 python tests/test_security.py
+python tests/test_streaming.py
 ```
 
 Build the distributable project capsule from its explicit file list:

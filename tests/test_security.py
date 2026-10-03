@@ -23,7 +23,11 @@ class ReceiverTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="cpc-security-")
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "input.cpc.md"
-        self.raw = cpc.parse_capsule(str(ROOT / "demo_project.cpc.md"))["raw"]
+        self.raw = self.parse(ROOT / "demo_project.cpc.md")["raw"]
+
+    def parse(self, path):
+        with cpc.parse_capsule(str(path)) as info:
+            return dict(info, raw=info["raw"].read())
 
     def carrier(self, packed):
         digest = hashlib.sha256(packed).hexdigest()
@@ -35,20 +39,20 @@ class ReceiverTests(unittest.TestCase):
     def test_expanded_boundary_and_bomb(self):
         self.carrier(lzma.compress(self.raw))
         with patch.object(cpc, "MAX_TAR", len(self.raw)):
-            self.assertEqual(cpc.parse_capsule(str(self.path))["raw"], self.raw)
+            self.assertEqual(self.parse(self.path)["raw"], self.raw)
         with patch.object(cpc, "MAX_TAR", len(self.raw) - 1):
             with self.assertRaisesRegex(cpc.CPCError, "TAR_LIMIT"):
-                cpc.parse_capsule(str(self.path))
+                self.parse(self.path)
         self.carrier(lzma.compress(b"x" * (1024 * 1024)))
         with patch.object(cpc, "MAX_TAR", 1024):
             with self.assertRaisesRegex(cpc.CPCError, "TAR_LIMIT"):
-                cpc.parse_capsule(str(self.path))
+                self.parse(self.path)
 
     def test_decoder_memory_limit(self):
         self.carrier(lzma.compress(self.raw))
         with patch.object(cpc, "MAX_LZMA_MEMORY", 1024):
             with self.assertRaisesRegex(cpc.CPCError, "DECOMPRESSION_FAILED"):
-                cpc.parse_capsule(str(self.path))
+                self.parse(self.path)
 
     def test_hash_checked_before_decoder(self):
         self.carrier(lzma.compress(self.raw))
@@ -56,7 +60,7 @@ class ReceiverTests(unittest.TestCase):
         self.path.write_text(text.replace(text.splitlines()[0].split("|")[-1], "0" * 64))
         with patch.object(cpc.lzma, "LZMADecompressor") as decoder:
             with self.assertRaisesRegex(cpc.CPCError, "HASH_MISMATCH"):
-                cpc.parse_capsule(str(self.path))
+                self.parse(self.path)
             decoder.assert_not_called()
 
     def test_reject_incomplete_extra_and_wrong_codec(self):
@@ -66,7 +70,7 @@ class ReceiverTests(unittest.TestCase):
             with self.subTest(payload_bytes=len(payload)):
                 self.carrier(payload)
                 with self.assertRaisesRegex(cpc.CPCError, "DECOMPRESSION_FAILED"):
-                    cpc.parse_capsule(str(self.path))
+                    self.parse(self.path)
 
     def test_carrier_and_compressed_limits(self):
         packed = lzma.compress(self.raw)
@@ -77,7 +81,7 @@ class ReceiverTests(unittest.TestCase):
         ):
             with patch.object(cpc, setting, ceiling):
                 with self.assertRaisesRegex(cpc.CPCError, error):
-                    cpc.parse_capsule(str(self.path))
+                    self.parse(self.path)
 
     def test_member_limit(self):
         with patch.object(cpc, "MAX_MEMBERS", 1):

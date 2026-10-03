@@ -55,6 +55,8 @@ Recommended core flags:
 -V       verbose
 -a       archive profile
 -m       maximum compression effort
+--preset N  XZ preset 0-9 (default 9; mutually exclusive with -m)
+--report    selected bytes, output size, and largest included files
 ```
 
 Outer filesystem copy/move/rename operations are intentionally not duplicated by CPC.

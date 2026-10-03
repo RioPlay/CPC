@@ -32,6 +32,7 @@ is required.
 """
 
 import argparse
+from contextlib import contextmanager
 import fnmatch
 import base64
 import hashlib
@@ -67,6 +68,8 @@ MAX_FILE = 1024 * 1024 * 1024
 MAX_TOTAL = 2 * 1024 * 1024 * 1024
 MAX_PATH = 1024
 MAX_DEPTH = 100
+MAX_METADATA = 16 * 1024 * 1024
+IO_CHUNK = 1024 * 1024
 
 WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
@@ -283,57 +286,102 @@ def tarinfo(name, typ, size=0, executable=False):
     ti.size = 0 if typ == "d" else size
     return ti
 
-def build_tar(source, archive_mode=False, includes=None, excludes=None):
+class CompressedTarWriter:
+    """Feed TAR writes to one XZ stream without retaining the archive in RAM."""
+    def __init__(self, output, preset):
+        self.output = output
+        self.compressor = lzma.LZMACompressor(format=lzma.FORMAT_XZ, preset=preset)
+        self.raw_hash = hashlib.sha256()
+        self.packed_hash = hashlib.sha256()
+        self.raw_size = self.packed_size = 0
+
+    def emit(self, data):
+        self.packed_size += len(data)
+        if self.packed_size > MAX_COMPRESSED:
+            raise CPCError("COMPRESSED_LIMIT")
+        self.packed_hash.update(data)
+        self.output.write(data)
+
+    def write(self, data):
+        self.raw_size += len(data)
+        if self.raw_size > MAX_TAR:
+            raise CPCError("TAR_LIMIT")
+        self.raw_hash.update(data)
+        self.emit(self.compressor.compress(data))
+        return len(data)
+
+    def finish(self):
+        self.emit(self.compressor.flush())
+        self.compressor = None
+
+
+def build_tar(source, packed, archive_mode=False, includes=None, excludes=None, preset=9):
     root_name, input_type, entries, excluded = walk_input(source, archive_mode, includes, excludes)
+    if len(entries) + 3 > MAX_MEMBERS:
+        raise CPCError("MEMBER_LIMIT")
+    if any(e[4] > MAX_FILE for e in entries):
+        raise CPCError("FILE_LIMIT")
+    if sum(e[4] for e in entries) > MAX_TOTAL:
+        raise CPCError("TOTAL_LIMIT")
     c_id = content_hash(entries)
     manifest = make_manifest(entries)
     state = make_state(root_name, input_type, archive_mode)
-
-    bio = io.BytesIO()
-    with tarfile.open(fileobj=bio, mode="w", format=tarfile.PAX_FORMAT) as tf:
-        # Internal metadata first, fixed names.
-        meta_dir = tarinfo(META_ROOT, "d")
-        tf.addfile(meta_dir)
-
-        st = tarinfo(f"{META_ROOT}/{STATE_NAME}", "f", len(state), False)
-        tf.addfile(st, io.BytesIO(state))
-
-        mi = tarinfo(f"{META_ROOT}/{MANIFEST_NAME}", "f", len(manifest), False)
-        tf.addfile(mi, io.BytesIO(manifest))
-
+    if len(manifest) > MAX_METADATA or len(state) > MAX_METADATA:
+        raise CPCError("METADATA_LIMIT")
+    writer = CompressedTarWriter(packed, preset)
+    with tarfile.open(fileobj=writer, mode="w|", format=tarfile.PAX_FORMAT) as tf:
+        tf.addfile(tarinfo(META_ROOT, "d"))
+        for name, data in ((STATE_NAME, state), (MANIFEST_NAME, manifest)):
+            tf.addfile(tarinfo(f"{META_ROOT}/{name}", "f", len(data)), io.BytesIO(data))
         for typ, rel, full, executable, size in entries:
             ti = tarinfo(rel, typ, size, executable)
             if typ == "d":
                 tf.addfile(ti)
             else:
-                # Detect simple source mutation around read.
                 before = os.stat(full, follow_symlinks=False)
                 with open(full, "rb") as fh:
                     tf.addfile(ti, fh)
                 after = os.stat(full, follow_symlinks=False)
                 if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                     raise CPCError(f"SOURCE_CHANGED: {full}")
+    writer.finish()
+    packed.seek(0)
+    return writer, c_id, root_name, input_type, entries, excluded
 
-    raw = bio.getvalue()
-    if len(raw) > MAX_TAR:
-        raise CPCError("TAR_LIMIT")
-    return raw, c_id, root_name, input_type, entries, excluded
 
-def encode_capsule(raw, content_id, preset=9):
-    # Fixed POC compressor profile. XZ FORMAT_XZ + preset.
-    packed = lzma.compress(raw, format=lzma.FORMAT_XZ, preset=preset)
-    if len(packed) > MAX_COMPRESSED:
-        raise CPCError("COMPRESSED_LIMIT")
-    cap_hash = sha256(packed)
-    package_id = sha256(raw)
-    b64 = base64.b64encode(packed).decode("ascii")
-    text = (
-        f"#CPC|1|b64>xz>tar|{cap_hash}\n"
-        f"{START}\n"
-        f"{b64}\n"
-        f"{END}\n"
-    )
-    return text, cap_hash, package_id, packed
+def encode_capsule(packed, output, cap_hash):
+    header = f"#CPC|1|b64>xz>tar|{cap_hash}\n{START}\n".encode("ascii")
+    total = len(header)
+    output.write(header)
+    # Multiples of three avoid padding between chunks; retain one Base64 line.
+    for chunk in iter(lambda: packed.read(3 * (IO_CHUNK // 3)), b""):
+        encoded = base64.b64encode(chunk)
+        total += len(encoded)
+        if total + len(END) + 2 > MAX_CARRIER:
+            raise CPCError("CARRIER_LIMIT")
+        output.write(encoded)
+    output.write(f"\n{END}\n".encode("ascii"))
+
+
+def publish_file(tmp, path, force=False, backup=False):
+    if os.path.lexists(path):
+        if not force and not backup:
+            raise CPCError(f"DEST_EXISTS: {path}")
+        if backup:
+            bak = path + ".bak"
+            n = 1
+            while os.path.lexists(bak):
+                bak = path + f".bak{n}"
+                n += 1
+            os.replace(path, bak)
+            try:
+                os.replace(tmp, path)
+            except BaseException:
+                os.replace(bak, path)
+                raise
+            return
+    os.replace(tmp, path)
+
 
 def atomic_write(path, data, force=False, backup=False):
     path = os.path.abspath(path)
@@ -374,69 +422,158 @@ def default_output_for_pack(source):
     clean = source.rstrip(os.sep)
     return clean + ".cpc.md"
 
+def decode_carrier(source, packed):
+    """Parse the envelope and Base64 in bounded reads, including unwrapped lines."""
+    carrier_size = 0
+    digest = hashlib.sha256()
+    packed_size = 0
+    quartet = b""
+    padded = False
+    whitespace = b" \t\r\n\v\f"
+
+    def decode_part(data):
+        nonlocal quartet, padded, packed_size
+        data = data.translate(None, whitespace)
+        if padded and data:
+            raise CPCError("BAD_BASE64")
+        data = quartet + data
+        boundary = len(data) // 4 * 4
+        complete, quartet = data[:boundary], data[boundary:]
+        if complete:
+            try:
+                decoded = base64.b64decode(complete, validate=True)
+            except (ValueError, base64.binascii.Error):
+                raise CPCError("BAD_BASE64")
+            padded = b"=" in complete
+            if padded and quartet:
+                raise CPCError("BAD_BASE64")
+            packed_size += len(decoded)
+            if packed_size > MAX_COMPRESSED:
+                raise CPCError("COMPRESSED_LIMIT")
+            digest.update(decoded)
+            packed.write(decoded)
+
+    header = source.readline(256)
+    carrier_size += len(header)
+    try:
+        meta = header.decode("ascii").strip().split("|")
+    except UnicodeDecodeError:
+        raise CPCError("NOT_CPC")
+    if len(meta) != 4 or meta[:3] != ["#CPC", VERSION, "b64>xz>tar"]:
+        raise CPCError("INVALID_METADATA")
+    cap_hash = meta[3]
+    if len(cap_hash) != 64 or any(c not in "0123456789abcdef" for c in cap_hash):
+        raise CPCError("INVALID_HASH")
+    phase = "start"
+    pending = b""
+    while True:
+        chunk = source.read(IO_CHUNK)
+        carrier_size += len(chunk)
+        if carrier_size > MAX_CARRIER:
+            raise CPCError("CARRIER_LIMIT")
+        if not chunk:
+            break
+        pending += chunk
+        if phase == "start":
+            pending = pending.lstrip(whitespace)
+            if len(pending) < len(START):
+                continue
+            if not pending.startswith(START.encode("ascii")):
+                raise CPCError("INVALID_MARKERS")
+            pending = pending[len(START):]
+            phase = "payload"
+        if phase == "payload":
+            marker = pending.find(b"<")
+            if marker == -1:
+                decode_part(pending)
+                pending = b""
+                continue
+            decode_part(pending[:marker])
+            pending = pending[marker:]
+            phase = "close"
+        if phase == "close":
+            if len(pending) < len(END):
+                continue
+            if not pending.startswith(END.encode("ascii")):
+                raise CPCError("INVALID_MARKERS")
+            if quartet:
+                raise CPCError("BAD_BASE64")
+            pending = pending[len(END):]
+            phase = "done"
+        if phase == "done":
+            if pending.strip(whitespace):
+                raise CPCError("INVALID_MARKERS")
+            pending = b""
+    if phase != "done":
+        raise CPCError("INVALID_MARKERS")
+    if digest.hexdigest() != cap_hash:
+        raise CPCError("HASH_MISMATCH")
+    packed.seek(0)
+    return cap_hash, packed_size, carrier_size
+
+
+def decompress_to_file(packed, raw):
+    decoder = lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=MAX_LZMA_MEMORY)
+    total = 0
+    digest = hashlib.sha256()
+    try:
+        while not decoder.eof:
+            data = packed.read(IO_CHUNK) if decoder.needs_input else b""
+            if decoder.needs_input and not data:
+                raise CPCError("DECOMPRESSION_FAILED: incomplete XZ stream")
+            chunk = decoder.decompress(data, max_length=min(IO_CHUNK, MAX_TAR - total + 1))
+            total += len(chunk)
+            if total > MAX_TAR:
+                raise CPCError("TAR_LIMIT")
+            digest.update(chunk)
+            raw.write(chunk)
+        if decoder.unused_data or packed.read(1):
+            raise CPCError("DECOMPRESSION_FAILED: trailing data or multiple XZ streams")
+    except lzma.LZMAError as error:
+        raise CPCError(f"DECOMPRESSION_FAILED: {error}")
+    raw.seek(0)
+    return total, digest.hexdigest()
+
+
+@contextmanager
 def parse_capsule(path):
     if os.path.getsize(path) > MAX_CARRIER:
         raise CPCError("CARRIER_LIMIT")
-    with open(path, "rb") as fh:
-        data = fh.read(MAX_CARRIER + 1)
-    if len(data) > MAX_CARRIER:
-        raise CPCError("CARRIER_LIMIT")
-    try:
-        md = data.decode("utf-8")
-    except UnicodeDecodeError:
-        raise CPCError("NOT_CPC")
+    with tempfile.TemporaryFile() as raw:
+        with tempfile.TemporaryFile() as packed, open(path, "rb") as source:
+            cap_hash, packed_size, carrier_size = decode_carrier(source, packed)
+            raw_size, package_id = decompress_to_file(packed, raw)
+        yield {
+            "version": VERSION, "codec": CODEC, "capsule_hash": cap_hash,
+            "package_id": package_id, "content_id": None, "raw": raw,
+            "raw_size": raw_size, "packed_size": packed_size,
+            "carrier_size": carrier_size,
+        }
 
-    lines = md.splitlines()
-    if len(lines) < 4 or not lines[0].startswith("#CPC|"):
-        raise CPCError("NOT_CPC")
-    meta = lines[0].strip().split("|")
-    if len(meta) != 4 or meta[0] != "#CPC" or meta[1] != VERSION or meta[2] != "b64>xz>tar":
-        raise CPCError("INVALID_METADATA")
-    cap_hash = meta[3]
-    if len(cap_hash) != 64:
-        raise CPCError("INVALID_HASH")
 
-    if md.count(START) != 1 or md.count(END) != 1:
-        raise CPCError("INVALID_MARKERS")
-    a = md.index(START) + len(START)
-    b = md.index(END)
-    if b < a:
-        raise CPCError("INVALID_MARKERS")
-    payload_text = "".join(md[a:b].split())
-    if len(payload_text) > 4 * ((MAX_COMPRESSED + 2) // 3):
-        raise CPCError("COMPRESSED_LIMIT")
-    try:
-        packed = base64.b64decode(payload_text, validate=True)
-    except Exception:
-        raise CPCError("BAD_BASE64")
-    if len(packed) > MAX_COMPRESSED:
-        raise CPCError("COMPRESSED_LIMIT")
-    if sha256(packed) != cap_hash:
-        raise CPCError("HASH_MISMATCH")
+class TarReadLimiter:
+    """Reject oversized TAR extension reads before tarfile allocates them."""
+    def __init__(self, source):
+        self.source = source
 
-    try:
-        decoder = lzma.LZMADecompressor(
-            format=lzma.FORMAT_XZ, memlimit=MAX_LZMA_MEMORY)
-        # Request at most one byte beyond the ceiling, not unlimited output.
-        raw = decoder.decompress(packed, max_length=MAX_TAR + 1)
-    except lzma.LZMAError as e:
-        raise CPCError(f"DECOMPRESSION_FAILED: {e}")
-    if len(raw) > MAX_TAR:
-        raise CPCError("TAR_LIMIT")
-    if not decoder.eof:
-        raise CPCError("DECOMPRESSION_FAILED: incomplete XZ stream")
-    if decoder.unused_data:
-        raise CPCError("DECOMPRESSION_FAILED: trailing data or multiple XZ streams")
-    return {
-        "version": VERSION,
-        "codec": CODEC,
-        "capsule_hash": cap_hash,
-        "package_id": sha256(raw),
-        "content_id": None,
-        "raw": raw,
-        "packed_size": len(packed),
-        "carrier_size": len(data),
-    }
+    def read(self, size=-1):
+        if size < 0 or size > MAX_METADATA + 512:
+            raise CPCError("METADATA_LIMIT")
+        return self.source.read(size)
+
+    def seek(self, *args):
+        return self.source.seek(*args)
+
+    def tell(self):
+        return self.source.tell()
+
+
+def open_tar(raw):
+    if isinstance(raw, bytes):
+        raw = io.BytesIO(raw)
+    raw.seek(0)
+    return tarfile.open(fileobj=TarReadLimiter(raw), mode="r:")
+
 
 def safe_member_name(name):
     portable_name_check(name)
@@ -461,7 +598,7 @@ def validate_archive(raw):
     manifest = None
 
     try:
-        tf = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
+        tf = open_tar(raw)
     except Exception as e:
         raise CPCError(f"BAD_TAR: {e}")
 
@@ -498,7 +635,9 @@ def validate_archive(raw):
             f = tf.extractfile(m)
             if f is None:
                 raise CPCError(f"BAD_INTERNAL: {name}")
-            return f.read()
+            if m.size > MAX_METADATA:
+                raise CPCError("METADATA_LIMIT")
+            return f.read(m.size)
 
         state = parse_state_bytes(read_internal(f"{META_ROOT}/{STATE_NAME}"))
         manifest = read_internal(f"{META_ROOT}/{MANIFEST_NAME}").decode("utf-8")
@@ -534,7 +673,7 @@ def validate_archive(raw):
         raise CPCError("MANIFEST_MEMBER_MISMATCH")
 
     # Hash regular members and validate type/size/mode.
-    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tf:
+    with open_tar(raw) as tf:
         for path, rec in expected.items():
             typ, size, executable, digest = rec
             m = tf.getmember(path)
@@ -556,7 +695,7 @@ def validate_archive(raw):
 
 def recompute_content_id(raw, expected):
     h = hashlib.sha256()
-    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tf:
+    with open_tar(raw) as tf:
         for path in sorted(expected, key=lambda p: p.encode("utf-8")):
             typ, size, executable, digest = expected[path]
             rel_b = path.encode("utf-8")
@@ -571,19 +710,22 @@ def recompute_content_id(raw, expected):
             h.update(b"\0")
     return h.hexdigest()
 
+@contextmanager
+def verified_capsule(path):
+    with parse_capsule(path) as info:
+        members, state, expected = validate_archive(info["raw"])
+        info.update({
+            "content_id": recompute_content_id(info["raw"], expected),
+            "members": members, "state": state, "manifest": expected,
+            "user_members": len(expected),
+        })
+        yield info
+
+
 def full_verify(path):
-    info = parse_capsule(path)
-    members, state, expected = validate_archive(info["raw"])
-    actual_content = recompute_content_id(info["raw"], expected)
-    info["content_id"] = actual_content
-    info.update({
-        "members": members,
-        "state": state,
-        "manifest": expected,
-        "user_members": len(expected),
-        "raw_size": len(info["raw"]),
-    })
-    return info
+    with verified_capsule(path) as info:
+        return {key: value for key, value in info.items() if key != "raw"}
+
 
 def is_capsule(path):
     if not os.path.isfile(path):
@@ -591,7 +733,7 @@ def is_capsule(path):
     try:
         with open(path, "rb") as fh:
             head = fh.read(6)
-        return head == b"#CPC|"
+        return head.startswith(b"#CPC|")
     except OSError:
         return False
 
@@ -611,26 +753,42 @@ def source_stats(source):
 
 def pack(source, output=None, force=False, backup=False, archive_mode=False, preset=9, includes=None, excludes=None):
     source = os.path.abspath(source)
-    out = output or default_output_for_pack(source)
-    raw, content_id, root_name, input_type, entries, excluded = build_tar(source, archive_mode, includes, excludes)
-    text, cap_hash, package_id, packed = encode_capsule(raw, content_id, preset=preset)
-    atomic_write(out, text.encode("utf-8"), force=force, backup=backup)
-    # verify what was actually published
-    info = full_verify(out)
+    out = os.path.abspath(output or default_output_for_pack(source))
+    if os.path.lexists(out) and not (force or backup):
+        raise CPCError(f"DEST_EXISTS: {out}")
+    with tempfile.TemporaryFile() as packed:
+        writer, content_id, root_name, input_type, entries, excluded = build_tar(
+            source, packed, archive_mode, includes, excludes, preset)
+        cap_hash = writer.packed_hash.hexdigest()
+        parent = os.path.dirname(out)
+        os.makedirs(parent, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".cpc-", suffix=".tmp", dir=parent)
+        try:
+            with os.fdopen(fd, "wb") as destination:
+                encode_capsule(packed, destination, cap_hash)
+                destination.flush()
+                os.fsync(destination.fileno())
+            # Verify before replacing an existing destination.
+            info = full_verify(tmp)
+            if info["content_id"] != content_id:
+                raise CPCError("SOURCE_CHANGED")
+            publish_file(tmp, out, force, backup)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+    largest = sorted(((e[1], e[4]) for e in entries if e[0] == "f"),
+                     key=lambda item: (-item[1], item[0]))[:5]
     return {
-        "output": os.path.abspath(out),
-        "root": root_name,
-        "type": input_type,
-        "content_id": content_id,
-        "package_id": package_id,
+        "output": out, "root": root_name, "type": input_type,
+        "content_id": content_id, "package_id": writer.raw_hash.hexdigest(),
         "capsule_hash": cap_hash,
-        "files": sum(1 for e in entries if e[0] == "f"),
-        "dirs": sum(1 for e in entries if e[0] == "d"),
-        "excluded": excluded,
-        "source_bytes": source_stats(source),
-        "carrier_bytes": os.path.getsize(out),
-        "verified": True,
+        "files": sum(e[0] == "f" for e in entries),
+        "dirs": sum(e[0] == "d" for e in entries), "excluded": excluded,
+        "source_bytes": sum(e[4] for e in entries if e[0] == "f"),
+        "carrier_bytes": os.path.getsize(out), "largest_files": largest,
+        "preset": preset, "verified": True,
     }
+
 
 def safe_join(root, archive_name):
     parts = archive_name.split("/")
@@ -656,7 +814,11 @@ def write_state_sidecar(dest_root, capsule_path, info):
 
 def unpack(capsule, output=None, force=False, backup=False, selected=None):
     capsule = os.path.abspath(capsule)
-    info = full_verify(capsule)
+    with verified_capsule(capsule) as info:
+        return unpack_verified(capsule, info, output, force, backup, selected)
+
+
+def unpack_verified(capsule, info, output, force, backup, selected):
     state = info["state"]
     root_name = state.get("root")
     if not root_name:
@@ -673,27 +835,14 @@ def unpack(capsule, output=None, force=False, backup=False, selected=None):
         # selected extraction output is destination directory itself.
         final_root = os.path.abspath(output or (os.path.splitext(os.path.basename(capsule))[0] + ".extract"))
 
-    if os.path.exists(final_root):
-        if not force and not backup:
-            raise CPCError(f"DEST_EXISTS: {final_root}")
-        if backup:
-            bak = final_root + ".bak"
-            n = 1
-            while os.path.exists(bak):
-                bak = final_root + f".bak{n}"
-                n += 1
-            os.replace(final_root, bak)
-        elif force:
-            if os.path.isdir(final_root):
-                shutil.rmtree(final_root)
-            else:
-                os.unlink(final_root)
+    if os.path.lexists(final_root) and not (force or backup):
+        raise CPCError(f"DEST_EXISTS: {final_root}")
 
     parent = os.path.dirname(final_root) or "."
     os.makedirs(parent, exist_ok=True)
     stage = tempfile.mkdtemp(prefix=".cpc-stage-", dir=parent)
     try:
-        with tarfile.open(fileobj=io.BytesIO(info["raw"]), mode="r:") as tf:
+        with open_tar(info["raw"]) as tf:
             for m in info["members"]:
                 name = m.name.rstrip("/") if m.isdir() else m.name
                 if name == META_ROOT or name.startswith(META_ROOT + "/"):
@@ -730,18 +879,41 @@ def unpack(capsule, output=None, force=False, backup=False, selected=None):
             staged_root = os.path.join(stage, root_name)
             if not os.path.exists(staged_root):
                 raise CPCError("MISSING_LOGICAL_ROOT")
-            os.replace(staged_root, final_root)
+            publish_extraction(staged_root, final_root, force, backup)
             sidecar = write_state_sidecar(final_root, capsule, info)
         else:
             # publish stage contents as requested output directory
-            os.replace(stage, final_root)
+            publish_extraction(stage, final_root, force, backup)
             stage = None
             sidecar = None
     finally:
         if stage and os.path.exists(stage):
             shutil.rmtree(stage, ignore_errors=True)
 
-    return final_root, sidecar, info
+    return final_root, sidecar, {k: v for k, v in info.items() if k != "raw"}
+
+def publish_extraction(staged, destination, force, backup):
+    if not os.path.lexists(destination):
+        os.replace(staged, destination)
+        return
+    if not (force or backup):
+        raise CPCError(f"DEST_EXISTS: {destination}")
+    # Keep the old destination available until staging has fully succeeded.
+    with tempfile.TemporaryDirectory(prefix=".cpc-old-", dir=os.path.dirname(destination)) as old:
+        saved = os.path.join(old, "previous")
+        if backup:
+            saved = destination + ".bak"
+            n = 1
+            while os.path.lexists(saved):
+                saved = destination + f".bak{n}"
+                n += 1
+        os.replace(destination, saved)
+        try:
+            os.replace(staged, destination)
+        except BaseException:
+            os.replace(saved, destination)
+            raise
+
 
 def read_sidecar_for(path):
     p = os.path.abspath(path)
@@ -826,6 +998,19 @@ def human_bytes(n):
             return f"{x:.1f}{unit}" if unit != "B" else f"{int(x)}B"
         x /= 1024
 
+def print_size_report(result):
+    before, after = result["source_bytes"], result["carrier_bytes"]
+    print(f"Selected: {before:,} bytes in {result['files']} files; "
+          f"excluded entries: {len(result['excluded'])}")
+    ratio = f"{after / before:.1%} of selected input" if before else "empty input"
+    print(f"Capsule: {after:,} bytes ({ratio}); preset: {result['preset']}")
+    if after > before:
+        print("Capsule is larger than selected input; review unnecessary assets.")
+    print("Largest included files (original bytes):")
+    for name, size in result["largest_files"]:
+        print(f"  {size:>12,}  {name}")
+
+
 def parser():
     p = argparse.ArgumentParser(prog="cpc", add_help=True)
     p.add_argument("--version", action="version", version=f"CPC {RELEASE_VERSION} (wire {VERSION})")
@@ -836,7 +1021,12 @@ def parser():
     p.add_argument("-q", "--quiet", action="store_true")
     p.add_argument("-V", "--verbose", action="store_true")
     p.add_argument("-a", "--archive", action="store_true")
-    p.add_argument("-m", "--max", action="store_true")
+    compression = p.add_mutually_exclusive_group()
+    compression.add_argument("-m", "--max", action="store_true")
+    compression.add_argument("--preset", type=int, choices=range(10), default=9,
+                             help="XZ compression preset (default: 9)")
+    p.add_argument("--report", action="store_true",
+                   help="show selected bytes, size change, and largest included files")
     p.add_argument("--include", action="append", default=[], metavar="GLOB",
                    help="force-include paths matching GLOB, overriding automatic ignores")
     p.add_argument("--exclude", action="append", default=[], metavar="GLOB",
@@ -846,7 +1036,7 @@ def parser():
 def main(argv=None):
     ns = parser().parse_args(argv)
     args = ns.args
-    preset = 9 | lzma.PRESET_EXTREME if ns.max else 9
+    preset = 9 | lzma.PRESET_EXTREME if ns.max else ns.preset
 
     try:
         if not args:
@@ -854,6 +1044,8 @@ def main(argv=None):
             if not ns.quiet:
                 print(f"CPC PASS {human_bytes(result['source_bytes'])} -> {human_bytes(result['carrier_bytes'])}")
                 print(f"-> {result['output']}")
+                if ns.report:
+                    print_size_report(result)
             return 0
 
         verbs = {"p","u","r","v","l","i","c","x","n",
@@ -872,6 +1064,8 @@ def main(argv=None):
             if not ns.quiet:
                 print(f"CPC PASS {human_bytes(result['source_bytes'])} -> {human_bytes(result['carrier_bytes'])}")
                 print(f"-> {result['output']}")
+                if ns.report:
+                    print_size_report(result)
             return 0
 
         if verb in ("p","pack"):
@@ -880,6 +1074,8 @@ def main(argv=None):
             if not ns.quiet:
                 print(f"CPC PASS {human_bytes(result['source_bytes'])} -> {human_bytes(result['carrier_bytes'])}")
                 print(f"-> {result['output']}")
+                if ns.report:
+                    print_size_report(result)
             return 0
 
         if verb in ("u","unpack"):
@@ -898,6 +1094,8 @@ def main(argv=None):
             if not ns.quiet:
                 print(f"CPC PASS files={result['files']}")
                 print(f"-> {result['output']}")
+                if ns.report:
+                    print_size_report(result)
             return 0
 
         if verb in ("v","verify"):
@@ -969,6 +1167,9 @@ def main(argv=None):
         raise CPCError("UNKNOWN_COMMAND")
 
     except CPCError as e:
+        print(f"CPC FAIL {e}", file=sys.stderr)
+        return 2
+    except (OSError, tarfile.TarError, UnicodeError, ValueError) as e:
         print(f"CPC FAIL {e}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
