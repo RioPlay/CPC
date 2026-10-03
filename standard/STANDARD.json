@@ -1,0 +1,15 @@
+{
+  "standard": "CPC",
+  "release": "0.3.0-rc.6",
+  "spec_version": "0.3-draft",
+  "wire_version": 1,
+  "recipe": "b64>xz>tar",
+  "test_vector_payload_sha256": "102039807403856a4369e5127f8d0aba2651f9985d8d7dceb03bf0ed927336aa",
+  "test_vector_size": 841,
+  "status": "release-candidate tooling / draft standard",
+  "license": "MIT",
+  "copyright_holder": "RioPlay",
+  "long_name": "Compact Project Capsule",
+  "creator": "RioPlay",
+  "maintainer": "RioPlay"
+}

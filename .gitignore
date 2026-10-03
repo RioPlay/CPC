@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.tmp
+.cpc-stage-*
+_install_test/
+.DS_Store
+Thumbs.db
+.*.cpc-state
+CPC.cpc.md.tmp
+_release/

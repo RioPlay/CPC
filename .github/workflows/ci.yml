@@ -1,0 +1,33 @@
+name: CPC CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.9", "3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Regression suite
+        run: python tests/test_cpc.py
+      - name: CLI smoke test
+        run: python bin/cpc.py --version
+      - name: Verify bundled capsules
+        run: |
+          python bin/cpc.py v standard/test-vector.cpc.md
+          python bin/cpc.py v demo_project.cpc.md
+          python bin/cpc.py v CPC.cpc.md
+      - name: Check release file allowlist
+        run: python tools/build_capsule.py --check

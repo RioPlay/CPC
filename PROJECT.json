@@ -1,0 +1,15 @@
+{
+  "name": "CPC",
+  "long_name": "Compact Project Capsule",
+  "project_owner": "RioPlay",
+  "copyright": "Copyright 2026 RioPlay",
+  "license": "MIT",
+  "release": "0.3.0-rc.6",
+  "wire_version": 1,
+  "license_files": [
+    "LICENSE"
+  ],
+  "creator": "RioPlay",
+  "maintainer": "RioPlay",
+  "governance": "RioPlay is sole maintainer and final authority for the official CPC project"
+}

@@ -1,0 +1,3 @@
+# Generated CPC release artifact. Keep it in GitHub, but do not recursively
+# carry the previous release capsule into the next CPC handoff.
+CPC.cpc.md
