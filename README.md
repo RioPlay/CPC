@@ -43,10 +43,21 @@ Add the directory printed by the installer to your `PATH` if needed. You can the
 
 ## Basic workflow
 
+Use `cpc <object>` for automatic handling:
+
+| Input | Default action |
+|---|---|
+| File | Pack into a CPC capsule |
+| Folder | Pack the selected project files |
+| ZIP or other archive | Pack the original archive intact as an opaque file |
+| Existing CPC capsule | Verify and unpack, detected by its header rather than its filename |
+
+Invalid CPC input is rejected; it is not silently wrapped in another capsule. Archives are not automatically expanded or converted. Explicit `p` and `u` commands remain available when you want to specify the operation.
+
 Pack a project:
 
 ```bash
-cpc p Project/ -o Project.cpc.md
+cpc Project/ -o Project.cpc.md
 ```
 
 Add `--report` to see selected input bytes, final size, and the five largest included files:
@@ -87,6 +98,7 @@ The receiver needs Python with LZMA support, but no package installation. Decodi
 | Command | Action |
 |---|---|
 | `cpc` | Pack the current directory |
+| `cpc <object>` | Auto-pack a file/folder or verify and unpack a CPC capsule |
 | `cpc p <path>` | Pack a file or directory |
 | `cpc u <capsule>` | Restore a capsule |
 | `cpc r <path>` | Repack a restored project |
@@ -147,8 +159,8 @@ For a reproducible example, `python tools/measure_sizes.py` measures CPC's Pytho
 
 | Input | File bytes before packing | Final `.cpc.md` bytes | Output / input |
 |---|---:|---:|---:|
-| CPC Python source and tests | 64,907 | 20,833 | 32.1% |
-| Same source plus compressed asset | 1,113,921 | 1,421,161 | 127.6% |
+| CPC Python source and tests | 65,590 | 21,049 | 32.1% |
+| Same source plus compressed asset | 1,114,604 | 1,421,369 | 127.5% |
 
 Measured on Python 3.13 with this source revision. Sizes vary with source changes and the LZMA runtime. Generated fixtures stay in a temporary directory. Check the final capsule size against the receiving interface's upload cap.
 

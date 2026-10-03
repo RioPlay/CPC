@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -58,7 +59,7 @@ def main():
 
         # deterministic same runtime
         cap2 = td / "Project2.cpc.md"
-        run("p", src, "-o", cap2,
+        run(src, "-o", cap2,
             env=dict(os.environ, PYTHONIOENCODING="cp1252"))
         assert cap2.read_bytes() == raw1, "same-runtime pack not byte deterministic"
 
@@ -102,20 +103,29 @@ def main():
         run("u", cap3, "-o", out2)
         assert (out2 / "Project" / "README.md").read_text(encoding="utf-8") == "# Changed\n"
 
-        # arbitrary single opaque file roundtrip
+        # A ZIP is auto-packed intact, not expanded or rewritten.
         one = td / "archive.zip"
-        one.write_bytes(b"PK\x03\x04" + os.urandom(4096))
+        with zipfile.ZipFile(one, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("nested/file.bin", os.urandom(4096))
         onecap = td / "archive.zip.cpc.md"
-        run("p", one, "-o", onecap)
+        run(one, "-o", onecap)
         oneout = td / "oneout"
         oneout.mkdir()
         run("u", onecap, "-o", oneout)
         assert (oneout / "archive.zip").read_bytes() == one.read_bytes()
 
+        # A normal file uses the same auto-pack / auto-unpack workflow.
+        blobcap = td / "blob.cpc.md"
+        run(src / "blob.bin", "-o", blobcap)
+        run(blobcap, "-o", td / "blobout")
+        assert (td / "blobout" / "blob.bin").read_bytes() == (src / "blob.bin").read_bytes()
+
         # outer rename does not matter
         renamed = td / "whatever.md"
         shutil.copy2(onecap, renamed)
         run("v", renamed)
+        run(renamed, "-o", td / "renamedout")
+        assert (td / "renamedout" / "archive.zip").read_bytes() == one.read_bytes()
 
         # corruption is rejected
         corrupt = td / "corrupt.cpc.md"
@@ -126,6 +136,8 @@ def main():
         repl = ("A" if payload[0] != "A" else "B") + payload[1:]
         corrupt.write_text(text[:a] + "\n" + repl + "\n" + text[b:], encoding="utf-8")
         run("v", corrupt, expect=2)
+        run(corrupt, "-o", td / "corruptout", expect=2)
+        assert not (td / "corruptout").exists(), "corrupt capsule must not be auto-packed"
 
         # overwrite default rejects
         run("p", src, "-o", cap, expect=2)
