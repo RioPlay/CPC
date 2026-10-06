@@ -32,6 +32,8 @@ Yes. Nested archives are preserved as opaque bytes by default.
 
 File contents are byte-preserved. Archive mode includes every supported regular file/directory. CPC is not a full filesystem-backup format for ACLs, xattrs, device nodes, etc.
 
+New packs also preserve file and directory modification times, subject to the receiving filesystem's range and precision. Use `--normalize-times` for compact/reproducible packaging when original dates are unnecessary. Repack remembers the selected policy. Old capsules cannot recover modification dates they never stored.
+
 ## Does a generated capsule inherit CPC's MIT license?
 
 No. CPC's software license applies to CPC's source code. A capsule contains whatever content the user chooses to package.

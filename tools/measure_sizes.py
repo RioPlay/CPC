@@ -7,6 +7,7 @@ Fixtures are generated only in a temporary directory, never in the repository.
 Results depend on source revision and the Python/LZMA runtime.
 """
 import importlib.util
+import os
 from pathlib import Path
 import random
 import shutil
@@ -28,7 +29,7 @@ def main():
             if name.endswith(".py") and not name.startswith("tools/"):
                 target = project / name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(ROOT / name, target)
+                shutil.copy2(ROOT / name, target)
         for with_assets in (False, True):
             if with_assets:
                 assets = project / "assets"
@@ -39,6 +40,11 @@ def main():
                 entry.compress_type = zipfile.ZIP_DEFLATED
                 with zipfile.ZipFile(assets / "bundle.zip", "w") as archive:
                     archive.writestr(entry, data)
+                os.utime(assets / "bundle.zip", (1767225600, 1767225600))
+            for directory in sorted([project]+[p for p in project.rglob("*") if p.is_dir()],
+                                    key=lambda p: len(p.parts), reverse=True):
+                ns = max(p.stat().st_mtime_ns for p in directory.iterdir())
+                os.utime(directory, ns=(ns, ns))
             capsule = Path(tmp) / ("assets.cpc.md" if with_assets else "source.cpc.md")
             result = cpc.pack(str(project), output=str(capsule))
             before, after = result["source_bytes"], result["carrier_bytes"]

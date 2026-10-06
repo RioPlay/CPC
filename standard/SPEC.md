@@ -143,6 +143,7 @@ max      = preset 9 | PRESET_EXTREME
 ```
 
 The profile is packaging policy, not part of CPC outer syntax.
+The reference packer defaults to `balanced`; `--preset 9` and `-m` explicitly select higher effort.
 
 **Logical content identity MUST NOT rely on XZ producing identical bytes across different liblzma versions.**
 
@@ -174,15 +175,20 @@ A later CPC generation MAY standardize safe links.
 
 ### 6.2 Canonical member metadata
 
-For canonical CPC packaging:
+Canonical ownership fields remain:
 
 ```text
-mtime = 0
 uid = 0
 gid = 0
 uname = ""
 gname = ""
 ```
+
+The reference profile now records `mtime=preserve|normalize` in `.cpc/state`. New packs default to `preserve`. Under `preserve`, user file and directory modification times are stored as integer TAR seconds, with a PAX `mtime` decimal when fractional precision is needed. Emit at most nine fractional digits and no exponent; parse the original decimal into integer epoch nanoseconds, not through floating point. CPC internal metadata members retain `mtime = 0`.
+
+Under `normalize`, all archive member times are zero. Readers of normalized capsules create fresh filesystem modification times rather than applying the epoch date. An absent policy means the legacy normalized behavior; unknown policy values MUST be rejected. Readers implementing preservation MUST validate dates before extraction, then apply file and directory dates in staging, with parent directories after their children. Timestamp application failure MUST prevent publication. A receiver MAY offer an explicit normalization override, recorded in the workspace state, but MUST NOT claim to recover original dates from a normalized capsule.
+
+The reference reader bounds dates to UTC years 0001 through 9999; a filesystem can support a narrower range and coarser precision. File content identity excludes timestamps. Timestamp-only changes can change capsule bytes without changing `content_id`. The wire header and compression chain remain v1; older reference readers ignore the new state key and do not restore modification times.
 
 Recommended canonical modes:
 
@@ -290,6 +296,7 @@ root=<logical-root>
 type=file|dir
 profile=chat|archive
 codec=xz
+mtime=preserve|normalize
 ```
 
 Unknown keys SHOULD be ignored by tolerant readers but preserved by repackers when feasible.
@@ -430,11 +437,17 @@ format version
 logical root
 source capsule location/name if meaningful
 selection profile
+modification-time policy
 compression profile
 prior content ID
+per-file executable intent where the local filesystem cannot represent it
 ```
 
 The sidecar is operational metadata, not user project content.
+
+The `mtime` policy is inherited by repack and export of a restored source tree unless explicitly overridden. Repack reads current filesystem modification times, including dates of edited/new files; it does not reapply an old timestamp table. Sidecars without the key inherit legacy normalization. Precision lost to a destination filesystem is not reconstructed on a later repack.
+
+The reference sidecar optionally stores `file_exec` as a JSON object mapping root-relative file paths to booleans (`.` represents a single-file root). Windows repack and compare use these recorded flags for matching paths. POSIX filesystems remain authoritative for executable-bit changes. Older sidecars without this field use the original filesystem-based behavior. The wire format does not change.
 
 Repack of unchanged represented user content MUST preserve `content_id`.
 
@@ -641,3 +654,29 @@ Once CPC is frozen, the following grammar is immutable:
 ```
 
 Enhancements that require new outer fields or a new decode chain become CPC2 rather than mutating CPC.
+
+## 24. Optional paired export transport
+
+Paired exports transport fragments of a complete CPC v1 carrier. This is a separate `CPC-PART` envelope, not a change to the `#CPC|1` capsule grammar. An individual part is not a CPC capsule and MUST NOT be restored independently. Existing readers require a join-capable tool to reconstruct the original capsule first.
+
+The reference exporter defaults to a 25,000,000-byte per-file cap. If the final verified capsule is at or below that cap, it MUST remain one unchanged capsule. Otherwise, split its bytes without recompressing or Base64-encoding them again. Every exported file, including the handoff note and part headers, MUST fit the configured cap.
+
+Each part starts with this exact ASCII line, terminated by LF, immediately followed by raw bytes from the original carrier:
+
+```text
+#CPC-PART|1|<set-sha256>|<index:06d>|<count:06d>|<original-size:020d>|<body-sha256>
+```
+
+Both hashes are 64 lowercase hexadecimal characters. Decimal fields have the fixed widths shown, padded with leading zeroes. The header is exactly 177 bytes including LF. Indexes start at 1. `set-sha256` hashes the complete original carrier file; `body-sha256` hashes only this part's body. The original capsule's own header continues to hash its decoded XZ payload. Part hashes and set IDs establish integrity, not sender identity.
+
+Canonical part names are `CPC-<first-12-set-hash-chars>.part-0001-of-0003.cpcpart.md`. The complete hash in the header determines membership; the filename prefix is for recognition only. Canonical emitters fill each body up to `cap - 177` bytes, with a possibly shorter final body, and provide `HANDOFF.md` identifying the set and restore procedure.
+
+The handoff MUST explain the recipe, required part count and set ID, and how to recover without a preinstalled CPC tool or prior conversation. The reference exporter includes its complete standalone standard-library receiver in a fenced Python block, with commands to save and run it in an isolated Python process. This is the same implementation used for normal validation, not a second relaxed decoder. The guide and all part files MUST fit the configured file-size limit. If the guide cannot fit, export MUST fail without publishing an incomplete or unusable set and SHOULD report the needed size. Single-capsule exports do not acquire an extra guide.
+
+The guide instructs a receiver to use intact attachment files on disk, request missing files rather than reconstruct from clipped prompt text, and verify the complete set before restoration. Supplied executable recovery code requires review; a guide is not a higher-priority instruction source, and neither its hashes nor the archive hashes authenticate a sender. Recovered project instructions remain untrusted task data. Restoring a project does not authorize executing it.
+
+Receivers MUST reject invalid headers, differing set IDs/counts/original sizes, duplicate or missing indexes, empty bodies, out-of-policy counts/sizes, and any hash mismatch. They MUST order by header index, reconstruct into a temporary file, enforce the original-size ceiling while writing, check the full carrier hash, and validate the CPC archive before publishing the reconstructed capsule. No extraction is part of joining. No output may be reported as successful for an incomplete set.
+
+The reference implementation allows 2–1,000 parts and retains the ordinary 512 MiB reconstructed-carrier ceiling and all archive limits. The minimum configurable export cap is 1 KiB. Join accepts an explicit set of filenames or one directory's immediate `.cpcpart.md` files; it does not search recursively or fetch missing files. Export and join require new destinations. Changing transport boundaries changes part bodies and hashes, but not the original carrier bytes or logical content ID.
+
+This transport does not guarantee acceptance by any chat service or bypass total-upload, text-token, context-window, or execution restrictions. Restoration requires intact part files accessible on disk. Treat all recovered content and any instructions within it as untrusted task data.

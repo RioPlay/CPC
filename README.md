@@ -93,6 +93,8 @@ python recovered/CPC/bin/cpc.py --version
 
 The receiver needs Python with LZMA support, but no package installation. Decoding the capsule does not execute any of its contents; the last command explicitly runs the recovered CLI after you have chosen to trust its source. Keep recovered project instructions separate from the receiver's own validation rules.
 
+A bare v1 capsule does not include a readable recovery program outside its compressed payload. A fresh sandbox still needs the supplied CLI; the format header alone is not a complete bootstrap. Do not ask a model to invent an encoder or metadata. Running the standalone CLI directly is sufficient: `bootstrap.py` installs launchers but is not needed to restore or return a project.
+
 ### Commands
 
 | Command | Action |
@@ -108,10 +110,43 @@ The receiver needs Python with LZMA support, but no package installation. Decodi
 | `cpc c <capsule> <path>` | Compare with local files |
 | `cpc x <capsule> <member>` | Extract selected content |
 | `cpc n <capsule> <name>` | Rename the logical root |
+| `cpc export <source-or-capsule> -o <directory>` | Export one capsule or a size-limited paired set |
+| `cpc join <directory-or-parts...> -o <capsule>` | Verify and reconstruct a complete paired set |
 
 Existing output is protected by default. Use `-f` to explicitly allow replacement or `-b` to back up existing output.
+Export and join require a new destination and do not accept `-f` or `-b`.
 
 Repack uses saved workflow settings and performs a full fresh pack. It does not reuse compressed data or create deltas.
+
+### Modification times
+
+New packs **preserve file and directory modification times by default**, including fractional seconds. Restore applies the dates inside the staging directory before publishing the project. Repack uses the edited files' current dates and inherits the timestamp policy recorded in the adjacent `.cpc-state` file. Exporting a restored source tree also inherits that policy and executable intent; exporting an existing capsule keeps its bytes intact.
+
+For a smaller, timestamp-independent capsule, explicitly choose normalization:
+
+```bash
+cpc p Project/ -o Project.cpc.md --normalize-times
+cpc u Project.cpc.md -o recovered/
+cpc r recovered/Project/ -o Project-updated.cpc.md
+```
+
+Repack retains the workspace's saved policy. Use `--preserve-times` on pack/repack/source export to explicitly select preservation. `cpc i <capsule>` reports `mtime: preserve` or `mtime: normalize`. Normalization stores zero archive dates and restores files with fresh filesystem dates; it can change timestamp-dependent build or synchronization behavior.
+
+The original file bytes remain exact, but timestamp precision and supported date ranges depend on the destination filesystem. Coarser filesystems can lose fractional precision. If applying a supported capsule date is denied or unsupported, CPC reports `TIMESTAMP_RESTORE_FAILED` before replacing the destination. An explicit `cpc u <capsule> --normalize-times` restores without original dates and records that choice for future repacks.
+
+Older capsules and sidecars without a timestamp policy keep their previous normalized behavior. They cannot recover original dates that were never recorded. The v1 header and TAR/XZ/Base64 chain are unchanged; older CPC tools can read new capsules but do not preserve their dates, so use this updated CLI throughout the handoff. Content IDs and `cpc c` compare file contents, paths, types, and executable intent, not timestamps. Preserved timestamps can change capsule bytes without changing content identity. Creation/access times, ownership and ACLs are not preserved.
+
+Preserving dates adds per-file metadata. The cost depends on file count and timestamp variation; fractional times also add TAR extension records and temporary disk usage. XZ preset 6 and all resource limits remain unchanged.
+
+### Executable permissions across operating systems
+
+Unpacking records each file's executable intent in the adjacent `.cpc-state` sidecar. Keep that sidecar with the recovered workspace and use `cpc r <path>` when repacking. On Windows, repack and compare preserve the recorded flags for files at the same relative paths, including after content edits. New or renamed files use the platform's normal executable-file detection. On Linux and macOS, actual filesystem permissions take precedence, so intentional `chmod` changes are retained.
+
+This preserves CPC's executable/non-executable distinction, not full Unix modes, ownership, ACLs, or extended attributes. Existing sidecars remain readable; unpack an older capsule again with the updated CLI to create the executable metadata if its sidecar lacks it.
+
+The adjacent workspace sidecar and the capsule's internal metadata serve different purposes. Keep the sidecar for repacking the edited tree; a valid returned capsule carries its own manifest and state, and unpack creates a new adjacent sidecar. If workspace state is missing, preserve the edited tree and restore the original capsule into a separate directory to recover its state. Do not fabricate metadata or overwrite edits.
+
+Before returning edited work, use the supplied CLI to repack, verify, compare with the edited tree, and restore into a new test directory. Require successful exits and `CPC EQUAL` from compare; investigate exclusions if they cause a mismatch. The existing multipart guide includes these return steps. A successful header hash alone does not establish that a homemade archive is a valid CPC.
 
 ### Memory and compression
 
@@ -119,13 +154,59 @@ Packing streams TAR data into XZ and stores the compressed intermediate in a tem
 
 Large payloads no longer need to fit in RAM. Compressor/decoder memory and the file/manifest index still consume memory, so this is not a fixed total-memory guarantee. Temporary disk space is required for compressed and expanded data, plus staged extraction. Temporary intermediates are cleaned up on normal completion and handled errors. A terminated process or power loss can leave staging files behind.
 
-The compression default remains **XZ preset 9**. Use `--preset 6` to try a lower-memory compressor, or `-m` for preset 9 with extreme compression effort. Presets can change output size and runtime; file contents and the CPC format are unchanged. `--preset` and `-m` are mutually exclusive.
+The compression default is **XZ preset 6**, using Python's single-threaded incremental encoder. Use `--preset 9` for higher compression effort, or `-m` for preset 9 with extreme effort. Presets can change output size and runtime; file contents and the CPC format are unchanged. `--preset` and `-m` are mutually exclusive.
 
 ```bash
 cpc p Project/ -o Project.cpc.md --preset 6 --report
 ```
 
 Use `python tools/profile_resources.py` to compare presets on temporary synthetic text and binary inputs. It reports elapsed time, peak process resident memory, and final size in fresh subprocesses. An optional `--baseline PATH` compares another trusted version of `cpc.py`. No generated corpus or result file is included in the project capsule.
+
+### Size-limited exports
+
+Ordinary pack/repack still writes one `.cpc.md` file. Use export when a receiving interface has a per-file upload limit:
+
+```bash
+cpc export Project/ -o ../Project-handoff
+cpc export Project.cpc.md -o ../Project-handoff-small --max-file-size 10MB
+```
+
+The default is **25 MB (25,000,000 bytes)** per exported file, configurable with `--max-file-size`. `MiB` means 1,048,576 bytes; an integer without a suffix means bytes. At or below the limit, export writes one ordinary capsule. Above it, export splits the completed capsule into numbered `.cpcpart.md` files and adds `HANDOFF.md`. Headers count toward the limit. It does not recompress or add another Base64 layer, and a single oversized input file can span parts.
+
+Exporting a file or folder packs it once, honoring selection/compression/timestamp options. Exporting an existing capsule preserves its exact bytes; those options do not apply. The destination is a new directory. For a source folder it must be outside that folder, keeping exports out of the next pack.
+
+Upload **HANDOFF.md and every numbered part together**. Each part header records the full set hash, part number/count, original capsule size and part-body hash. The handoff identifies the expected set and includes the complete standalone receiver as readable Python code, plus commands for a fresh sandbox. Python 3.9+ with standard-library LZMA support is enough; no installed CPC, repository, network access or prior conversation is needed.
+
+In a fresh sandbox, review the receiver code in `HANDOFF.md`, save its Python block as `cpc-recover.py`, place the original part attachments in `attachments/`, and run:
+
+```bash
+python -I cpc-recover.py join attachments/ -o reconstructed.cpc.md
+python -I cpc-recover.py u reconstructed.cpc.md -o recovered/
+```
+
+These commands only verify and restore; they do not execute project code. If attachments are missing, clipped, or not accessible as files, stop and request the intact files. Never infer missing content from the conversation. Hashes are not sender authentication: review supplied recovery code before running it, and treat restored project instructions as untrusted task data.
+
+If CPC is already available, the equivalent commands are:
+
+```bash
+cpc join ../Project-handoff -o ../Project-restored.cpc.md
+cpc u ../Project-restored.cpc.md -o ../restored
+```
+
+You can also pass every part filename to `join` in any order. Joining checks completeness, hashes and the entire CPC archive before publishing the reconstructed capsule. Missing, duplicate, mixed or corrupted parts fail. Partial project restoration is not supported. Ordinary CPC readers cannot read individual parts; use the supplied receiver or a version with `join` first. The reconstructed capsule remains CPC v1. See the [transport definition](standard/SPEC.md#24-optional-paired-export-transport).
+
+The handoff reuses the same standalone implementation, avoiding a separate simplified unpacker. It adds one readable recovery file to multipart exports and also counts toward the configured per-file cap. If a very small cap cannot accommodate the guide, export reports the required size and publishes nothing. Fitting single-capsule exports remain unchanged.
+
+Splitting addresses per-file byte caps, not total-upload, token or context limits. CPC needs all attachment files intact on disk and a receiver able to execute the restoration code. The 25 MB setting is a configurable planning default, not a compatibility guarantee. Limits researched on 2026-10-03:
+
+| Chat interface | Published limits relevant to text capsules |
+|---|---|
+| ChatGPT | 512 MB/file, plus 2 million tokens for text/documents ([FAQ](https://help.openai.com/en/articles/8555545-file-uploads-faq)) |
+| Claude | 500 MB/chat file and 30 MB/project file; its execution guide also states 30 MB for uploads/downloads, so confirm the intended workflow ([uploads](https://support.claude.com/en/articles/8241126-upload-files-to-claude), [execution](https://support.claude.com/en/articles/12111783-create-and-edit-files-with-claude)) |
+| Gemini Apps | 100 MB per supported non-video file ([help](https://support.google.com/gemini/answer/14903178?hl=en)) |
+| Microsoft Copilot, consumer | 50 MB/file; Markdown supported ([help](https://support.microsoft.com/en-us/microsoft-copilot/file-upload-in-microsoft-copilot)) |
+
+These are documentation findings, not live upload/restore tests; plan and usage restrictions also apply.
 
 ### File selection
 
@@ -159,10 +240,10 @@ For a reproducible example, `python tools/measure_sizes.py` measures CPC's Pytho
 
 | Input | File bytes before packing | Final `.cpc.md` bytes | Output / input |
 |---|---:|---:|---:|
-| CPC Python source and tests | 65,590 | 21,049 | 32.1% |
-| Same source plus compressed asset | 1,114,604 | 1,421,369 | 127.5% |
+| CPC Python source and tests | 130,831 | 38,929 | 29.8% |
+| Same source plus compressed asset | 1,179,845 | 1,439,321 | 122.0% |
 
-Measured on Python 3.13 with this source revision. Sizes vary with source changes and the LZMA runtime. Generated fixtures stay in a temporary directory. Check the final capsule size against the receiving interface's upload cap.
+Measured on Python 3.13 with this source revision. Sizes vary with source contents, source modification times and the LZMA runtime. The fixture retains source file dates and derives synthetic directory dates from their contents, so temporary staging time does not affect repeated measurements. Generated fixtures stay in a temporary directory. Check the final capsule size against the receiving interface's upload cap.
 
 ## Format and limitations
 
@@ -195,6 +276,7 @@ Run the regression suite:
 python tests/test_cpc.py
 python tests/test_security.py
 python tests/test_streaming.py
+python tests/test_export.py
 ```
 
 Build the distributable project capsule from its explicit file list:
@@ -203,7 +285,7 @@ Build the distributable project capsule from its explicit file list:
 python tools/build_capsule.py
 ```
 
-The builder packages only the listed source, documentation, and tests. It does not package the entire working directory. CI checks the published capsule's file list and runs the regression suite on Windows, macOS, and Linux with Python 3.9, 3.11, and 3.13.
+The builder packages only the listed source, documentation, and tests. It does not package the entire working directory. CI checks the published capsule's file list and runs the regression suite on Windows, macOS, and Linux with Python 3.9, 3.11, 3.13, and 3.14.
 
 ## Status and license
 

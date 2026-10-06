@@ -4,6 +4,7 @@
 """Build or check the public CPC capsule using an explicit file allowlist."""
 import argparse
 import importlib.util
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -20,7 +21,7 @@ FILES = (
     "standard/CLI_PROFILE.md", "standard/SECURITY.md",
     "standard/STANDARD.json", "standard/TEST_VECTOR.md",
     "standard/test-vector.cpc.md", "tests/test_cpc.py", "tests/test_security.py",
-    "tests/test_streaming.py", "tools/build_capsule.py", "tools/measure_sizes.py",
+    "tests/test_streaming.py", "tests/test_export.py", "tests/test_timestamps.py", "tools/build_capsule.py", "tools/measure_sizes.py",
     "tools/profile_resources.py",
 )
 
@@ -43,10 +44,17 @@ def main():
                     raise RuntimeError(f"Missing or unsupported release file: {name}")
                 target = stage / name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
+                shutil.copy2(source, target)
                 target.chmod(0o755 if name in (
                     "bin/cpc.py", "bootstrap.py", "install.sh"
                 ) else 0o644)
+            # This is an allowlisted release tree, not a copy of every source
+            # directory. Derive its synthetic directory dates from included
+            # files, so staging time and the previous self-capsule do not leak in.
+            directories = [stage] + [p for p in stage.rglob("*") if p.is_dir()]
+            for directory in sorted(directories, key=lambda p: len(p.parts), reverse=True):
+                ns = max(p.stat().st_mtime_ns for p in directory.iterdir())
+                os.utime(directory, ns=(ns, ns))
             cpc.pack(str(stage), output=str(output), force=True)
     info = cpc.full_verify(str(output))
     expected = {"CPC/" + name for name in FILES}

@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import lzma
+import os
 from pathlib import Path
 import tempfile
 import tarfile
@@ -142,6 +143,81 @@ class StreamingTests(unittest.TestCase):
         result = cpc.pack(str(self.source), str(self.cap), preset=6, excludes=["ignored.bin"])
         self.assertEqual(result["source_bytes"], len(b"print('hello')\r\n"))
         self.assertEqual(result["largest_files"], [("Project/main.py", result["source_bytes"])])
+
+    def test_executable_intent_survives_repack_and_edits(self):
+        (self.source / "run.sh").write_bytes(b"#!/bin/sh\necho original\n")
+        (self.source / "data.exe").write_bytes(b"not executable")
+        cpc.pack(str(self.source), str(self.cap), preset=6,
+                 file_exec={"run.sh": True, "data.exe": False})
+        before = cpc.full_verify(str(self.cap))
+        restored, side, _ = cpc.unpack(str(self.cap), str(self.root / "out"))
+        restored = Path(restored)
+        _, state = cpc.read_sidecar_for(str(restored))
+        intent = cpc.recorded_executable_intent(state)
+        self.assertIs(intent["run.sh"], True)
+        self.assertIs(intent["data.exe"], False)
+        self.assertEqual(cpc.compare(str(self.cap), str(restored))[:3], ([], [], []))
+        unchanged = self.root / "unchanged.cpc.md"
+        result = cpc.repack(str(restored), str(unchanged), preset=6)
+        self.assertEqual(result["content_id"], before["content_id"])
+
+        (restored / "run.sh").write_bytes(b"#!/bin/sh\necho edited\n")
+        (restored / "new.txt").write_bytes(b"new")
+        (restored / "main.py").unlink()
+        changed = self.root / "edited.cpc.md"
+        cpc.repack(str(restored), str(changed), preset=6)
+        manifest = cpc.full_verify(str(changed))["manifest"]
+        self.assertTrue(manifest["Project/run.sh"][2])
+        self.assertFalse(manifest["Project/data.exe"][2])
+        self.assertFalse(manifest["Project/new.txt"][2])
+        self.assertNotIn("Project/main.py", manifest)
+
+    def test_single_file_executable_intent(self):
+        script = self.root / "run.sh"
+        script.write_bytes(b"#!/bin/sh\necho hello\n")
+        cpc.pack(str(script), str(self.cap), preset=6, file_exec={".": True})
+        restored, _, original = cpc.unpack(str(self.cap), str(self.root / "out"))
+        result = cpc.repack(restored, str(self.root / "returned.cpc.md"), preset=6)
+        self.assertEqual(result["content_id"], original["content_id"])
+
+    @unittest.skipIf(os.name == "nt", "Unix chmod semantics require a POSIX filesystem")
+    def test_posix_chmod_overrides_recorded_intent(self):
+        (self.source / "run.sh").write_bytes(b"#!/bin/sh\necho hello\n")
+        cpc.pack(str(self.source), str(self.cap), preset=6, file_exec={"run.sh": True})
+        restored, _, _ = cpc.unpack(str(self.cap), str(self.root / "out"))
+        (Path(restored) / "run.sh").chmod(0o644)
+        (Path(restored) / "main.py").chmod(0o755)
+        changed = self.root / "chmod.cpc.md"
+        cpc.repack(restored, str(changed), preset=6)
+        manifest = cpc.full_verify(str(changed))["manifest"]
+        self.assertFalse(manifest["Project/run.sh"][2])
+        self.assertTrue(manifest["Project/main.py"][2])
+        self.assertEqual(set(cpc.compare(str(self.cap), restored)[2]),
+                         {"Project/run.sh", "Project/main.py"})
+
+    def test_old_sidecar_without_executable_map_still_works(self):
+        cpc.pack(str(self.source), str(self.cap), preset=6)
+        restored, side, _ = cpc.unpack(str(self.cap), str(self.root / "out"))
+        p = Path(side)
+        p.write_text("\n".join(line for line in p.read_text().splitlines()
+                              if not line.startswith("file_exec=")) + "\n")
+        cpc.repack(restored, str(self.root / "legacy.cpc.md"), preset=6)
+
+    def test_executable_metadata_validation(self):
+        for value in ('[]', '{"run.sh": 1}', '{"run.sh": "false"}', '{"../run.sh": true}'):
+            with self.subTest(value=value), self.assertRaises(cpc.CPCError):
+                cpc.recorded_executable_intent({"file_exec": value})
+        cpc.pack(str(self.source), str(self.cap), preset=6)
+        raw = io.BytesIO()
+        with cpc.parse_capsule(str(self.cap)) as info:
+            with cpc.open_tar(info["raw"]) as source, tarfile.open(fileobj=raw, mode="w") as target:
+                for member in source:
+                    data = source.extractfile(member) if member.isfile() else None
+                    if member.name == "Project/main.py":
+                        member.mode ^= 0o111
+                    target.addfile(member, data)
+        with self.assertRaisesRegex(cpc.CPCError, "MANIFEST_MISMATCH"):
+            cpc.validate_archive(raw.getvalue())
 
 
 if __name__ == "__main__":

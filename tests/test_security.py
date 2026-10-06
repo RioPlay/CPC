@@ -125,6 +125,75 @@ class ReceiverTests(unittest.TestCase):
                 with self.assertRaisesRegex(cpc.CPCError, error):
                     cpc.validate_archive(self.altered_tar(extra=[member]))
 
+    def extension(self, size, kind=tarfile.XHDTYPE):
+        header = tarfile.TarInfo("extension")
+        header.type = kind
+        header.size = size
+        if size:
+            if kind in (tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK):
+                data = b"x" * (size - 1) + b"\0"
+            else:
+                prefix = str(size).encode() + b" comment="
+                data = prefix + b"x" * (size - len(prefix) - 1) + b"\n"
+        else:
+            data = b""
+        return header.tobuf() + data + b"\0" * (-size % 512)
+
+    def assert_rejected_before_extraction(self, raw, error):
+        self.carrier(lzma.compress(raw, preset=0))
+        with patch.object(cpc, "unpack_verified") as extract:
+            with self.assertRaisesRegex(cpc.CPCError, error):
+                cpc.unpack(str(self.path), str(Path(self.tmp.name)/"out"))
+            extract.assert_not_called()
+
+    def test_extension_limit_before_body_allocation(self):
+        for kind in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                     tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK):
+            header = tarfile.TarInfo("extension")
+            header.type = kind
+            header.size = cpc.MAX_EXTENSION + 1
+            # No body exists: the declared-size error must precede any body read.
+            self.assert_rejected_before_extraction(header.tobuf(), "EXTENSION_LIMIT")
+        self.carrier(lzma.compress(self.extension(cpc.MAX_EXTENSION)+self.raw, preset=0))
+        self.assertEqual(cpc.full_verify(str(self.path))["content_id"],
+                         cpc.full_verify(str(ROOT/"demo_project.cpc.md"))["content_id"])
+
+    def test_cumulative_extensions_and_internal_metadata(self):
+        # Individually permitted PAX records must also share one cumulative budget.
+        with patch.object(cpc, "MAX_METADATA", 32 * 1024):
+            self.assert_rejected_before_extraction(
+                self.extension(16 * 1024)*3+self.raw, "METADATA_LIMIT")
+        with tarfile.open(fileobj=io.BytesIO(self.raw), mode="r:") as archive:
+            internal = sum(m.size for m in archive if m.name.startswith('.cpc/') and m.isfile())
+        with patch.object(cpc, "MAX_METADATA", internal):
+            cpc.validate_archive(self.raw)
+            self.assert_rejected_before_extraction(self.extension(512)+self.raw, "METADATA_LIMIT")
+        with patch.object(cpc, "MAX_METADATA", internal-1):
+            self.assert_rejected_before_extraction(self.raw, "METADATA_LIMIT")
+
+    def test_hidden_headers_count_and_recursion_limit(self):
+        with patch.object(cpc, "MAX_MEMBERS", 3):
+            self.assert_rejected_before_extraction(self.extension(0)*4+self.raw, "MEMBER_LIMIT")
+        self.assert_rejected_before_extraction(
+            self.extension(0)*(cpc.MAX_EXTENSION_DEPTH+1)+self.raw, "EXTENSION_DEPTH_LIMIT")
+        with patch.object(cpc, "MAX_MEMBERS", 20):
+            raw = b"".join(tarfile.TarInfo("file"+str(i)).tobuf() for i in range(21))
+            self.assert_rejected_before_extraction(raw, "MEMBER_LIMIT")
+
+    def test_pax_cannot_enable_sparse_decoding(self):
+        for attributes in (
+            {'GNU.sparse.size': '0'},
+            {'GNU.sparse.map': '0,0'},
+            {'GNU.sparse.major': '1', 'GNU.sparse.minor': '0',
+             'GNU.sparse.realsize': '0', 'GNU.sparse.name': 'file'},
+        ):
+            raw = io.BytesIO()
+            with tarfile.open(fileobj=raw, mode='w', format=tarfile.PAX_FORMAT) as archive:
+                member = tarfile.TarInfo('file')
+                member.pax_headers = attributes
+                archive.addfile(member, io.BytesIO())
+            self.assert_rejected_before_extraction(raw.getvalue(), 'UNSUPPORTED_MEMBER_TYPE')
+
 
 if __name__ == "__main__":
     unittest.main()
