@@ -113,6 +113,12 @@ extract selected user content
 
 A reader MUST validate the archive before publishing recovered content.
 
+### 4.1 Explicit nonconforming-archive recovery
+
+An implementation MAY provide a separate, explicitly selected recovery operation for an intact v1 carrier whose inner CPC metadata is missing or inconsistent. It MUST NOT silently fall back to recovery during ordinary verification or unpack, or report a recovered nonconforming input as CPC-valid. Recovery MUST retain outer hash verification, complete bounded decompression, path/type/duplicate checks, and all resource ceilings. Missing implied directory entries MAY be created from validated file paths. Conflicting paths or file/directory types MUST NOT be guessed or merged.
+
+The reference `recover` operation retains all archived user paths beneath a new `files/` directory without interpreting a claimed logical root. Original `.cpc` entries are isolated under `metadata/.cpc/`; a report records the first CPC metadata failure and the limits of recovery. Fresh adjacent workspace state is generated from archive member facts. Stale manifest hashes are diagnostics in this mode only, and do not establish the correctness or completeness of recovered content. Any subsequent valid CPC is a new package, verified against its newly generated metadata. Recovery does not reconstruct missing data or validate a damaged outer carrier.
+
 ---
 
 ## 5. Compression

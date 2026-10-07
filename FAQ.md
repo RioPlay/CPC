@@ -42,6 +42,10 @@ No. CPC's software license applies to CPC's source code. A capsule contains what
 
 No. Run `python bin/cpc.py` directly from the downloaded project. Other implementations can follow the [format specification](standard/SPEC.md).
 
+## What if an LLM returns an archive that fails CPC validation?
+
+Use `cpc recover returned.cpc.md -o new-recovery/` when the outer CPC encoding and archive remain intact. Recovery accepts missing or inconsistent CPC metadata, recreates implied directories, and keeps original paths beneath `new-recovery/files/`. It retains original metadata separately and writes a diagnostic report. It does not bypass unsafe paths, resource ceilings, or outer hash failures. `cpc r new-recovery/files/ -o repaired.cpc.md` creates and verifies fresh metadata from those recovered contents; it cannot prove the original project was complete.
+
 ## Who maintains CPC?
 
 CPC was created and is maintained by RioPlay.

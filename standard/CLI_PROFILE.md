@@ -9,6 +9,7 @@ cpc
 cpc <thing>
 cpc p <thing>
 cpc u <capsule>
+cpc recover <capsule> -o <new-directory> [--normalize-times]
 cpc r <workspace>
 cpc v <capsule>
 cpc l <capsule>
@@ -65,6 +66,10 @@ Recommended core flags:
 ```
 
 Outer filesystem copy/move/rename operations are intentionally not duplicated by CPC.
+
+`recover` is an explicit salvage operation, separate from strict `u`/`v`. It requires `-o` naming a new directory, and rejects overwrite/backup, selection, compression, archive-profile and export-limit options. It accepts timestamp flags and `-q`, but always prints a recovery warning. Exit 0 means recovery succeeded, not that the input was a valid CPC. Exit 2 means recovery failed. All archived user paths are retained under `files/`; original `.cpc` entries are isolated under `metadata/.cpc/`. `recovery.json` records the first metadata failure and limitations. Newly generated `.files.cpc-state` supports `cpc r <destination>/files -o <new-capsule>` with archive profile and TAR executable intent. Ordinary packing exclusions, including `.cpcignore`, still apply. The source archive is never a default repack destination.
+
+If original CPC metadata is invalid, recovery uses the TAR dates by default and never inherits its root, source, profile, or executable-state declarations. Invalid or unsupported TAR dates require explicit `--normalize-times`. Fully valid metadata retains its timestamp policy; `--preserve-times` cannot recover dates from a known normalized capsule. No missing file, directory date, or original permission policy is invented.
 
 The timestamp flags are mutually exclusive. They apply to pack, unpack, repack, selective extract, root rename, and source export. Verification/list/inspect/compare/join reject these flags; exporting an existing capsule also rejects them because it preserves exact bytes. Restore inherits the capsule policy and writes it to the adjacent sidecar; repack and restored-source export inherit the sidecar policy. Legacy capsules/sidecars without the policy remain normalized. Asking restore to preserve dates from a normalized capsule fails with `TIMESTAMPS_UNAVAILABLE`. An explicit normalization override can recover a preserved capsule on a filesystem that cannot apply its dates, and records the changed policy.
 

@@ -89,6 +89,11 @@ WINDOWS_RESERVED = {
 class CPCError(Exception):
     pass
 
+
+class CPCMetadataError(CPCError):
+    """The carrier and archive structure passed, but CPC metadata did not."""
+    pass
+
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -707,13 +712,13 @@ def parse_state_bytes(data):
             out[k] = v
     return out
 
-def validate_archive(raw):
+def scan_archive(raw):
+    """Shared safety gate for strict validation and explicit recovery."""
     members = []
     total = 0
     names = set()
-    folded_names = set()
-    state = None
-    manifest = None
+    paths = {}
+    raw_size = len(raw) if isinstance(raw, bytes) else raw.seek(0, os.SEEK_END)
 
     try:
         tf = open_tar(raw)
@@ -733,20 +738,52 @@ def validate_archive(raw):
             if name in names:
                 raise CPCError(f"DUPLICATE_MEMBER: {name}")
             names.add(name)
-            if name.casefold() in folded_names:
-                raise CPCError(f"CASE_COLLISION: {name}")
-            folded_names.add(name.casefold())
+            # Include implied parents: A/x and a/y conflict on Windows even
+            # when neither parent directory has an explicit TAR entry.
+            parts = name.split("/")
+            for depth in range(1, len(parts) + 1):
+                path = "/".join(parts[:depth])
+                directory = depth < len(parts) or m.isdir()
+                old = paths.get(path.casefold())
+                if old is not None:
+                    if old[0] != path:
+                        raise CPCError(f"CASE_COLLISION: {path}")
+                    if old[1] != directory:
+                        raise CPCError(f"PATH_TYPE_CONFLICT: {path}")
+                else:
+                    paths[path.casefold()] = (path, directory)
+                    if len(paths) > MAX_MEMBERS:
+                        raise CPCError("MEMBER_LIMIT: includes implied directories")
 
             if not (m.isfile() or m.isdir()):
                 raise CPCError(f"UNSUPPORTED_MEMBER_TYPE: {name}")
             if m.isfile():
                 if m.size < 0 or m.size > MAX_FILE:
                     raise CPCError(f"FILE_LIMIT: {name}")
+                if m.offset_data + m.size > raw_size:
+                    raise CPCError(f"BAD_TAR: truncated member: {name}")
                 total += m.size
                 if total > MAX_TOTAL:
                     raise CPCError("TOTAL_LIMIT")
             members.append(m)
+        # tarfile may stop at a bad later header or the first zero block.
+        # Require a complete terminator and reject hidden/trailing archives.
+        tf.fileobj.seek(tf.offset)
+        tail_size = 0
+        while True:
+            tail = tf.fileobj.read(min(IO_CHUNK, MAX_METADATA + 512))
+            if not tail:
+                break
+            tail_size += len(tail)
+            if tail.strip(b"\0"):
+                raise CPCError("BAD_TAR: nonzero data after final member")
+        if tail_size < 1024 or raw_size % 512:
+            raise CPCError("BAD_TAR: incomplete end blocks")
+    return members
 
+
+def validate_cpc_metadata(raw, members):
+    with open_tar(raw) as tf:
         def read_internal(name):
             try:
                 m = tf.getmember(name)
@@ -821,6 +858,14 @@ def validate_archive(raw):
             else:
                 raise CPCError(f"BAD_MANIFEST_TYPE: {path}")
     return members, state, expected
+
+
+def validate_archive(raw):
+    members = scan_archive(raw)
+    try:
+        return validate_cpc_metadata(raw, members)
+    except (CPCError, UnicodeError, ValueError) as error:
+        raise CPCMetadataError(str(error)) from error
 
 def recompute_content_id(raw, expected):
     h = hashlib.sha256()
@@ -960,6 +1005,107 @@ def unpack(capsule, output=None, force=False, backup=False, selected=None, mtime
         return unpack_verified(capsule, info, output, force, backup, selected)
 
 
+def extract_members(raw, members, destination, mtime):
+    """Extract already safety-checked members only, into private staging."""
+    dated = []
+    with open_tar(raw) as tf:
+        for m in members:
+            name = m.name.rstrip("/") if m.isdir() else m.name
+            dest = safe_join(destination, name)
+            if mtime == "preserve":
+                dated.append((dest, member_mtime_ns(m)))
+            if m.isdir():
+                os.makedirs(dest, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with tf.extractfile(m) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out, length=IO_CHUNK)
+            try:
+                os.chmod(dest, 0o755 if m.isdir() or (m.mode & 0o111) else 0o644)
+            except OSError:
+                pass
+    # Parent directory dates must be applied after all children are written.
+    for dest, ns in sorted(dated, key=lambda item: len(Path(item[0]).parts), reverse=True):
+        try:
+            os.utime(dest, ns=(os.stat(dest).st_atime_ns, ns))
+        except (OSError, OverflowError, ValueError) as error:
+            raise CPCError(f"TIMESTAMP_RESTORE_FAILED: {dest}: {error}; "
+                           "use --normalize-times to restore without original dates") from error
+
+
+def recover(capsule, output, mtime=None):
+    """Salvage safe v1 archive contents without trusting CPC metadata."""
+    capsule, output = os.path.abspath(capsule), os.path.abspath(output)
+    if os.path.lexists(output):
+        raise CPCError(f"DEST_EXISTS: {output}")
+    if mtime is not None:
+        timestamp_policy({"mtime": mtime})
+    with parse_capsule(capsule) as info:
+        # Envelope, compressed hash and every structural/resource check remain
+        # mandatory. Only the subsequent CPC metadata audit is diagnostic.
+        members = scan_archive(info["raw"])
+        failure = None
+        verified_state = None
+        try:
+            _, verified_state, _ = validate_cpc_metadata(info["raw"], members)
+        except (CPCError, UnicodeError, ValueError) as error:
+            failure = str(error)
+        if mtime == "preserve" and verified_state and timestamp_policy(verified_state) != "preserve":
+            raise CPCError("TIMESTAMPS_UNAVAILABLE: original dates were not recorded")
+        policy = mtime or (timestamp_policy(verified_state) if verified_state else "preserve")
+        payload, metadata = [], []
+        for member in members:
+            name = member.name.rstrip("/") if member.isdir() else member.name
+            if name == META_ROOT or name.startswith(META_ROOT + "/"):
+                metadata.append(member)
+            else:
+                if policy == "preserve":
+                    member_mtime_ns(member)
+                payload.append(member)
+        if not payload:
+            raise CPCError("NO_RECOVERABLE_FILES")
+        report = {
+            "status": "recovered", "original_cpc_valid": failure is None,
+            "first_validation_failure": failure,
+            "xz_sha256": info["capsule_hash"], "outer_hash_verified": True,
+            "files": sum(m.isfile() for m in payload),
+            "explicit_directories": sum(m.isdir() for m in payload),
+            "metadata_members_retained": len(metadata), "mtime": policy,
+            "notes": [
+                "Archived paths are preserved beneath files/; missing parents are created.",
+                "Original .cpc bytes are evidence under metadata/, never workspace policy.",
+                "Only recorded TAR dates and executable bits can be recovered; original intent and completeness are not proven.",
+                "Implicit directories have new filesystem dates. Ownership and ACLs are not restored.",
+                "Fresh workspace state uses the archive profile; review packing exclusions before returning files.",
+                "Repacking validates a new capsule, not the completeness of the original project.",
+            ],
+        }
+        parent = os.path.dirname(output)
+        os.makedirs(parent, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".cpc-stage-", dir=parent) as temp:
+            stage = Path(temp)/"recovery"
+            files = stage/"files"
+            files.mkdir(parents=True)
+            extract_members(info["raw"], payload, str(files), policy)
+            if metadata:
+                evidence = stage/"metadata"
+                evidence.mkdir()
+                extract_members(info["raw"], metadata, str(evidence), "normalize")
+            # Generate NEW state from TAR member facts, never copy defective
+            # policy or a source destination supplied in the archive.
+            records = {
+                "files/" + m.name: ("f", m.size, bool(m.mode & 0o111), "")
+                for m in payload if m.isfile()
+            }
+            fresh = {"state": {"root": "files", "profile": "archive", "mtime": policy},
+                     "manifest": records, "content_id": ""}
+            write_state_sidecar(str(files), os.path.join(output, "recovered.cpc.md"), fresh)
+            (stage/"recovery.json").write_text(json.dumps(report, ensure_ascii=True, indent=2)+"\n",
+                                               encoding="utf-8")
+            publish_extraction(str(stage), output, False, False)
+    return dict(report, output=output)
+
+
 def unpack_verified(capsule, info, output, force, backup, selected):
     state = info["state"]
     root_name = state.get("root")
@@ -984,49 +1130,17 @@ def unpack_verified(capsule, info, output, force, backup, selected):
     os.makedirs(parent, exist_ok=True)
     stage = tempfile.mkdtemp(prefix=".cpc-stage-", dir=parent)
     try:
-        dated = []
-        with open_tar(info["raw"]) as tf:
-            for m in info["members"]:
-                name = m.name.rstrip("/") if m.isdir() else m.name
-                if name == META_ROOT or name.startswith(META_ROOT + "/"):
+        members = []
+        for m in info["members"]:
+            name = m.name.rstrip("/") if m.isdir() else m.name
+            if name == META_ROOT or name.startswith(META_ROOT + "/"):
+                continue
+            if selected is not None:
+                sel = selected.strip("/")
+                if name != sel and not name.startswith(sel + "/"):
                     continue
-
-                if selected is not None:
-                    sel = selected.strip("/")
-                    if name != sel and not name.startswith(sel + "/"):
-                        continue
-                    # strip common selected prefix for convenient selective extraction
-                    relname = name
-                else:
-                    relname = name
-
-                dest = safe_join(stage, relname)
-                if timestamp_policy(state) == "preserve":
-                    dated.append((dest, member_mtime_ns(m)))
-                if m.isdir():
-                    os.makedirs(dest, exist_ok=True)
-                    try:
-                        os.chmod(dest, 0o755)
-                    except OSError:
-                        pass
-                elif m.isfile():
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    src = tf.extractfile(m)
-                    with open(dest, "wb") as out:
-                        shutil.copyfileobj(src, out, length=1024 * 1024)
-                    try:
-                        os.chmod(dest, 0o755 if (m.mode & 0o111) else 0o644)
-                    except OSError:
-                        pass
-
-        # Apply directory times after children, inside staging. A denial or
-        # unsupported date must not replace an existing destination.
-        for dest, ns in sorted(dated, key=lambda item: len(Path(item[0]).parts), reverse=True):
-            try:
-                os.utime(dest, ns=(os.stat(dest).st_atime_ns, ns))
-            except (OSError, OverflowError, ValueError) as error:
-                raise CPCError(f"TIMESTAMP_RESTORE_FAILED: {dest}: {error}; "
-                               "use --normalize-times to restore without original dates") from error
+            members.append(m)
+        extract_members(info["raw"], members, stage, timestamp_policy(state))
 
         # For full extraction, stage contains logical root; publish that root.
         if selected is None:
@@ -1528,7 +1642,8 @@ def export_project(source, output, limit=DEFAULT_EXPORT_LIMIT, archive_mode=Fals
 def parser():
     p = argparse.ArgumentParser(prog="cpc", add_help=True,
                                 epilog="Export: cpc export SOURCE -o NEW_DIRECTORY [--max-file-size 25MB]. "
-                                       "Rejoin: cpc join DIRECTORY_OR_PARTS -o NEW_CAPSULE.")
+                                       "Rejoin: cpc join DIRECTORY_OR_PARTS -o NEW_CAPSULE. "
+                                       "Recovery: cpc recover CAPSULE -o NEW_DIRECTORY.")
     p.add_argument("--version", action="version", version=f"CPC {RELEASE_VERSION} (wire {VERSION})")
     p.add_argument("args", nargs="*")
     p.add_argument("-o", "--output")
@@ -1562,6 +1677,21 @@ def main(argv=None):
     preset = 9 | lzma.PRESET_EXTREME if ns.max else ns.preset
 
     try:
+        if args and args[0] == "recover":
+            if (len(args) != 2 or not ns.output or ns.force or ns.backup or ns.archive
+                    or ns.include or ns.exclude or ns.max or ns.preset != 6
+                    or ns.max_file_size is not None or ns.report):
+                raise CPCError("USAGE: cpc recover <capsule> -o <new-directory> [--normalize-times]")
+            result = recover(args[1], ns.output, ns.mtime)
+            # The warning survives -q; recovery is never presented as CPC PASS.
+            print("CPC RECOVERED: original completeness is not proven; see recovery.json", file=sys.stderr)
+            if result["first_validation_failure"]:
+                print("CPC METADATA WARNING " + result["first_validation_failure"], file=sys.stderr)
+            if not ns.quiet:
+                print(f"-> {result['output']}")
+                print("Repack with fresh metadata: " +
+                      f'cpc r "{os.path.join(result["output"], "files")}" -o "{os.path.join(result["output"], "recovered.cpc.md")}"')
+            return 0
         if ns.mtime is not None and args and args[0] in (
                 "v", "verify", "l", "list", "i", "inspect", "c", "compare", "join"):
             raise CPCError("TIMESTAMP_OPTION: use with pack, unpack, repack, extract, rename-root or source export")
@@ -1718,6 +1848,10 @@ def main(argv=None):
 
     except CPCError as e:
         print(f"CPC FAIL {e}", file=sys.stderr)
+        if isinstance(e, CPCMetadataError):
+            print("The archive passed structural checks but failed CPC metadata validation. "
+                  "Use cpc recover <capsule> -o <new-directory> for explicit recovery; "
+                  "original completeness cannot be verified.", file=sys.stderr)
         return 2
     except (OSError, tarfile.TarError, UnicodeError, ValueError) as e:
         print(f"CPC FAIL {e}", file=sys.stderr)

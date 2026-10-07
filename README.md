@@ -103,6 +103,7 @@ A bare v1 capsule does not include a readable recovery program outside its compr
 | `cpc <object>` | Auto-pack a file/folder or verify and unpack a CPC capsule |
 | `cpc p <path>` | Pack a file or directory |
 | `cpc u <capsule>` | Restore a capsule |
+| `cpc recover <capsule> -o <new-directory>` | Explicitly recover safe archive contents despite defective CPC metadata |
 | `cpc r <path>` | Repack a restored project |
 | `cpc v <capsule>` | Verify integrity and archive structure |
 | `cpc l <capsule>` | List contents |
@@ -117,6 +118,22 @@ Existing output is protected by default. Use `-f` to explicitly allow replacemen
 Export and join require a new destination and do not accept `-f` or `-b`.
 
 Repack uses saved workflow settings and performs a full fresh pack. It does not reuse compressed data or create deltas.
+
+### Recovering an improvised CPC from an LLM
+
+An LLM may return a readable Base64/XZ/TAR archive with missing state, a stale manifest, or missing directory entries. Normal unpack remains strict. If the carrier and archive pass structural checks but CPC metadata fails, the CLI suggests explicit recovery:
+
+```bash
+cpc recover returned.cpc.md -o recovered-return/
+cpc r recovered-return/files/ -o repaired.cpc.md
+cpc v repaired.cpc.md
+```
+
+`recover` requires a new destination and never replaces the input or an existing project. It preserves all archived user paths under `recovered-return/files/`, including multiple top-level folders, and creates missing parent directories. It does not guess or strip a logical root. The original `.cpc` entries are retained byte-for-byte under `recovered-return/metadata/.cpc/` as evidence, separate from the recovered files. `recovery.json` records the outer hash, first CPC validation failure, counts, timestamp policy, and limitations. Recovery reports **CPC RECOVERED**, not **CPC PASS**; warnings remain visible with `-q`.
+
+Fresh adjacent workspace state supports repacking `files/`, carrying TAR executable bits across Windows. It uses the archive profile; normal `.cpcignore` rules still apply during repack, so review exclusions. Recovery preserves recorded TAR modification times by default when CPC metadata cannot be verified. Implicit directories receive new dates. For unsupported or malformed dates, explicitly use `--normalize-times`. Valid original metadata can select its existing normalized timestamp policy, but defective metadata never supplies workspace paths or settings.
+
+Recovery requires the existing v1 header, valid Base64, a matching outer SHA-256, a complete single XZ stream, and a complete safe TAR. It keeps all size/metadata/member limits and rejects unsafe paths, links, duplicate members, case collisions (including implied parents), file/directory conflicts, truncated members, and nonzero data after the TAR terminator. A stale inner file hash is recorded as a metadata failure; it is not evidence that the recovered file is correct. Recovery cannot prove original completeness or recreate files, dates, permissions, or policies that were never recorded. Repacking creates a new valid capsule from the recovered contents, not retroactive validation of the original.
 
 ### Modification times
 
@@ -240,8 +257,8 @@ For a reproducible example, `python tools/measure_sizes.py` measures CPC's Pytho
 
 | Input | File bytes before packing | Final `.cpc.md` bytes | Output / input |
 |---|---:|---:|---:|
-| CPC Python source and tests | 130,831 | 38,929 | 29.8% |
-| Same source plus compressed asset | 1,179,845 | 1,439,321 | 122.0% |
+| CPC Python source and tests | 150,035 | 43,921 | 29.3% |
+| Same source plus compressed asset | 1,199,049 | 1,444,305 | 120.5% |
 
 Measured on Python 3.13 with this source revision. Sizes vary with source contents, source modification times and the LZMA runtime. The fixture retains source file dates and derives synthetic directory dates from their contents, so temporary staging time does not affect repeated measurements. Generated fixtures stay in a temporary directory. Check the final capsule size against the receiving interface's upload cap.
 
