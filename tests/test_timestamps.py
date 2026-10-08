@@ -69,7 +69,7 @@ class TimestampTests(unittest.TestCase):
     def test_default_restore_and_unchanged_repack(self):
         result = cpc.pack(str(self.project), str(self.cap))
         self.assertEqual(result['mtime'], 'preserve')
-        restored, side, info = cpc.unpack(str(self.cap), str(self.root/'restored'))
+        restored, side, info = cpc.unpack(str(self.cap), str(self.root/'restored'), strict=True, keep_state=True)
         self.assertEqual(self.tree_times(Path(restored)), self.times)
         self.assertEqual(cpc.read_sidecar_for(restored)[1]['mtime'], 'preserve')
         self.assertEqual(cpc.inspect_capsule(str(self.cap))['mtime'], 'preserve')
@@ -84,7 +84,7 @@ class TimestampTests(unittest.TestCase):
 
     def test_repack_uses_current_times_after_edits(self):
         cpc.pack(str(self.project), str(self.cap))
-        restored, _, _ = cpc.unpack(str(self.cap), str(self.root/'restored'))
+        restored, _, _ = cpc.unpack(str(self.cap), str(self.root/'restored'), strict=True, keep_state=True)
         tree = Path(restored)
         p = tree/'source.txt'
         p.write_bytes(b'edited')
@@ -94,7 +94,7 @@ class TimestampTests(unittest.TestCase):
         expected = self.tree_times(tree)
         returned = self.root/'returned.cpc.md'
         cpc.repack(restored, str(returned))
-        out, _, _ = cpc.unpack(str(returned), str(self.root/'next'))
+        out, _, _ = cpc.unpack(str(returned), str(self.root/'next'), strict=True, keep_state=True)
         self.assertEqual(self.tree_times(Path(out)), expected)
         self.assertEqual((Path(out)/'source.txt').read_bytes(), b'edited')
 
@@ -109,7 +109,7 @@ class TimestampTests(unittest.TestCase):
         self.assertEqual(info['state']['mtime'], 'normalize')
         self.assertTrue(all(cpc.member_mtime_ns(m) == 0 for m in info['members']))
         with patch.object(cpc.os, 'utime') as setter:
-            restored, _, _ = cpc.unpack(str(other), str(self.root/'restore'))
+            restored, _, _ = cpc.unpack(str(other), str(self.root/'restore'), strict=True, keep_state=True)
             setter.assert_not_called()
         returned = self.root/'returned.cpc.md'
         self.cli('r', restored, '-o', returned)
@@ -119,7 +119,7 @@ class TimestampTests(unittest.TestCase):
 
     def test_unpack_override_is_remembered_and_normalized_dates_are_not_invented(self):
         cpc.pack(str(self.project), str(self.cap))
-        self.cli('u', self.cap, '-o', self.root/'restore', '--normalize-times')
+        self.cli('u', self.cap, '-o', self.root/'restore', '--normalize-times', '--state')
         restored = self.root/'restore/Project'
         self.assertEqual(cpc.read_sidecar_for(str(restored))[1]['mtime'], 'normalize')
         normalized = self.root/'normalized.cpc.md'
@@ -137,7 +137,7 @@ class TimestampTests(unittest.TestCase):
             return data
         self.mutate(legacy, edit)
         with patch.object(cpc.os, 'utime') as setter:
-            restored, side, _ = cpc.unpack(str(legacy), str(self.root/'restore'))
+            restored, side, _ = cpc.unpack(str(legacy), str(self.root/'restore'), strict=True, keep_state=True)
             setter.assert_not_called()
         p = Path(side)
         p.write_text(p.read_text(encoding='utf-8').replace('mtime=normalize\n',''), encoding='utf-8')
@@ -146,7 +146,7 @@ class TimestampTests(unittest.TestCase):
 
     def test_export_inherits_sidecar_and_capsule_export_preserves_bytes(self):
         cpc.pack(str(self.project), str(self.cap), mtime='normalize')
-        restored, _, _ = cpc.unpack(str(self.cap), str(self.root/'restore'))
+        restored, _, _ = cpc.unpack(str(self.cap), str(self.root/'restore'), strict=True, keep_state=True)
         for override in (None, 'preserve'):
             folder = self.root/('export-'+str(override))
             cpc.export_project(restored, folder, mtime=override)
@@ -165,11 +165,11 @@ class TimestampTests(unittest.TestCase):
                          self.times['notes/caf\u00e9.txt'])
         single = self.root/'single.cpc.md'
         cpc.pack(str(self.project/'source.txt'), str(single))
-        restored, _, _ = cpc.unpack(str(single), str(self.root/'single'))
+        restored, _, _ = cpc.unpack(str(single), str(self.root/'single'), strict=True, keep_state=True)
         self.assertEqual(Path(restored).stat().st_mtime_ns, self.times['source.txt'])
         renamed = self.root/'renamed.cpc.md'
         self.cli('n', self.cap, 'Renamed', '-o', renamed)
-        restored, _, _ = cpc.unpack(str(renamed), str(self.root/'rename-restore'))
+        restored, _, _ = cpc.unpack(str(renamed), str(self.root/'rename-restore'), strict=True, keep_state=True)
         self.assertEqual(self.tree_times(Path(restored)), self.times)
 
     def test_timestamp_failure_does_not_replace_existing_destination(self):
@@ -179,7 +179,7 @@ class TimestampTests(unittest.TestCase):
         (old/'keep.txt').write_bytes(b'keep')
         with patch.object(cpc.os, 'utime', side_effect=PermissionError('denied')):
             with self.assertRaisesRegex(cpc.CPCError, 'TIMESTAMP_RESTORE_FAILED'):
-                cpc.unpack(str(self.cap), str(old.parent), force=True)
+                cpc.unpack(str(self.cap), str(old.parent), force=True, strict=True, keep_state=True)
         self.assertEqual((old/'keep.txt').read_bytes(), b'keep')
         self.assertFalse(list(old.parent.glob('.cpc-stage-*')))
         self.assertFalse((old.parent/'.Project.cpc-state').exists())
@@ -195,7 +195,7 @@ class TimestampTests(unittest.TestCase):
                 return data
             self.mutate(bad, edit)
             with self.subTest(stamp=stamp[:30]), self.assertRaises(cpc.CPCError):
-                cpc.unpack(str(bad), str(self.root/'not-created'))
+                cpc.unpack(str(bad), str(self.root/'not-created'), strict=True, keep_state=True)
             self.assertFalse((self.root/'not-created').exists())
         for policy in ('bogus', 'normalize'):
             bad = self.root/(policy+'.cpc.md')
@@ -205,7 +205,7 @@ class TimestampTests(unittest.TestCase):
                 return data
             self.mutate(bad, edit)
             with self.assertRaises(cpc.CPCError):
-                cpc.unpack(str(bad), str(self.root/'not-created'))
+                cpc.unpack(str(bad), str(self.root/'not-created'), strict=True, keep_state=True)
             self.assertFalse((self.root/'not-created').exists())
 
     def test_timestamp_only_change_keeps_content_identity(self):

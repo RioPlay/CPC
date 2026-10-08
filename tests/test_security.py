@@ -108,7 +108,7 @@ class ReceiverTests(unittest.TestCase):
                 self.carrier(lzma.compress(self.altered_tar(root=root)))
                 destination = Path(self.tmp.name) / "out"
                 with self.assertRaises(cpc.CPCError):
-                    cpc.unpack(str(self.path), output=str(destination), force=True)
+                    cpc.unpack(str(self.path), output=str(destination), force=True, strict=True)
                 self.assertFalse(destination.exists())
 
     def test_unsafe_members(self):
@@ -143,7 +143,7 @@ class ReceiverTests(unittest.TestCase):
         self.carrier(lzma.compress(raw, preset=0))
         with patch.object(cpc, "unpack_verified") as extract:
             with self.assertRaisesRegex(cpc.CPCError, error):
-                cpc.unpack(str(self.path), str(Path(self.tmp.name)/"out"))
+                cpc.unpack(str(self.path), str(Path(self.tmp.name)/"out"), strict=True)
             extract.assert_not_called()
 
     def test_extension_limit_before_body_allocation(self):

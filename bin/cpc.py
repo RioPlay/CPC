@@ -7,7 +7,7 @@ CPC reference implementation 0.3.0-rc.6
 Primary workflow:
     cpc.py                  # pack current directory
     cpc.py THING            # pack normal input / unpack CPC capsule
-    cpc.py r PATH           # repack using CPC sidecar state
+    cpc.py r PATH           # fresh pack; use optional saved settings if present
     cpc.py v CAPSULE        # verify
     cpc.py l CAPSULE        # list
     cpc.py i CAPSULE        # inspect
@@ -884,20 +884,65 @@ def recompute_content_id(raw, expected):
             h.update(b"\0")
     return h.hexdigest()
 
+def basic_archive_metadata(raw, members):
+    """Describe actual TAR contents without trusting optional CPC records."""
+    payload = [m for m in members if m.name.rstrip('/') != META_ROOT
+               and not m.name.startswith(META_ROOT + '/')]
+    if not payload:
+        raise CPCError("NO_PROJECT_CONTENT")
+    roots = {m.name.split('/')[0] for m in payload}
+    root = next(iter(roots)) if len(roots) == 1 else ""
+    expected = {}
+    with open_tar(raw) as tf:
+        for m in payload:
+            name = m.name.rstrip('/') if m.isdir() else m.name
+            digest = '-'
+            if m.isfile():
+                h = hashlib.sha256()
+                with tf.extractfile(m) as source:
+                    for chunk in iter(lambda: source.read(IO_CHUNK), b''):
+                        h.update(chunk)
+                digest = h.hexdigest()
+            expected[name] = ('d' if m.isdir() else 'f', m.size if m.isfile() else 0,
+                              bool(m.mode & 0o111) if m.isfile() else False, digest)
+    root_file = any(m.name == root and m.isfile() for m in payload)
+    state = {"root": root, "type": "file" if root_file else "dir",
+             "profile": "archive", "mtime": "preserve"}
+    return state, expected
+
+
+def warn_metadata(info):
+    if info.get("metadata_warning"):
+        print("CPC WARNING: transport integrity verified; optional metadata audit failed: "
+              + info["metadata_warning"] + ". Using actual archive paths; original completeness is not proven.",
+              file=sys.stderr)
+
+
 @contextmanager
-def verified_capsule(path):
+def verified_capsule(path, strict=True):
     with parse_capsule(path) as info:
-        members, state, expected = validate_archive(info["raw"])
+        members = scan_archive(info["raw"])
+        warning = None
+        try:
+            _, state, expected = validate_cpc_metadata(info["raw"], members)
+        except (CPCError, UnicodeError, ValueError) as error:
+            if strict:
+                raise CPCMetadataError(str(error)) from error
+            warning = str(error)
+            state, expected = basic_archive_metadata(info["raw"], members)
         info.update({
             "content_id": recompute_content_id(info["raw"], expected),
             "members": members, "state": state, "manifest": expected,
             "user_members": len(expected),
+            "metadata_valid": warning is None, "metadata_warning": warning,
         })
         yield info
 
 
-def full_verify(path):
-    with verified_capsule(path) as info:
+def full_verify(path, strict=True):
+    with verified_capsule(path, strict=strict) as info:
+        if not strict:
+            warn_metadata(info)
         return {key: value for key, value in info.items() if key != "raw"}
 
 
@@ -994,15 +1039,17 @@ def write_state_sidecar(dest_root, capsule_path, info):
     atomic_write(sidecar, text.encode("utf-8"), force=True)
     return sidecar
 
-def unpack(capsule, output=None, force=False, backup=False, selected=None, mtime=None):
+def unpack(capsule, output=None, force=False, backup=False, selected=None, mtime=None,
+           strict=False, keep_state=False):
     capsule = os.path.abspath(capsule)
-    with verified_capsule(capsule) as info:
+    with verified_capsule(capsule, strict=strict) as info:
+        warn_metadata(info)
         if mtime is not None:
             timestamp_policy({"mtime": mtime})
             if mtime == "preserve" and timestamp_policy(info["state"]) != "preserve":
                 raise CPCError("TIMESTAMPS_UNAVAILABLE: original dates were not recorded")
             info["state"] = dict(info["state"], mtime=mtime)
-        return unpack_verified(capsule, info, output, force, backup, selected)
+        return unpack_verified(capsule, info, output, force, backup, selected, keep_state)
 
 
 def extract_members(raw, members, destination, mtime):
@@ -1106,13 +1153,16 @@ def recover(capsule, output, mtime=None):
     return dict(report, output=output)
 
 
-def unpack_verified(capsule, info, output, force, backup, selected):
+def unpack_verified(capsule, info, output, force, backup, selected, keep_state=False):
     state = info["state"]
     root_name = state.get("root")
-    if not root_name:
-        raise CPCError("MISSING_ROOT_STATE")
+    flat = not root_name
 
-    if selected is None:
+    if selected is None and flat:
+        if not output:
+            raise CPCError("MULTIPLE_ROOTS: use -o to name the complete destination directory")
+        final_root = os.path.abspath(output)
+    elif selected is None:
         if output:
             dest_parent = os.path.abspath(output)
             # explicit output is the containing destination for logical root
@@ -1125,6 +1175,9 @@ def unpack_verified(capsule, info, output, force, backup, selected):
 
     if os.path.lexists(final_root) and not (force or backup):
         raise CPCError(f"DEST_EXISTS: {final_root}")
+    if not keep_state and selected is None and os.path.lexists(sidecar_path(final_root)):
+        raise CPCError("STATE_EXISTS: an older adjacent .cpc-state exists; use --state to refresh it "
+                       "or move it aside before a stateless restore")
 
     parent = os.path.dirname(final_root) or "."
     os.makedirs(parent, exist_ok=True)
@@ -1143,17 +1196,22 @@ def unpack_verified(capsule, info, output, force, backup, selected):
         extract_members(info["raw"], members, stage, timestamp_policy(state))
 
         # For full extraction, stage contains logical root; publish that root.
-        if selected is None:
+        if selected is None and not flat:
             staged_root = os.path.join(stage, root_name)
             if not os.path.exists(staged_root):
                 raise CPCError("MISSING_LOGICAL_ROOT")
             publish_extraction(staged_root, final_root, force, backup)
-            sidecar = write_state_sidecar(final_root, capsule, info)
+            sidecar = write_state_sidecar(final_root, capsule, info) if keep_state else None
         else:
             # publish stage contents as requested output directory
             publish_extraction(stage, final_root, force, backup)
             stage = None
             sidecar = None
+            if selected is None and keep_state:
+                logical = os.path.basename(final_root)
+                fresh = dict(info, state=dict(state, root=logical), manifest={
+                    logical + '/' + name: record for name, record in info['manifest'].items()})
+                sidecar = write_state_sidecar(final_root, capsule, fresh)
     finally:
         if stage and os.path.exists(stage):
             shutil.rmtree(stage, ignore_errors=True)
@@ -1193,10 +1251,8 @@ def read_sidecar_for(path):
     side = sidecar_path(path)
     if not os.path.isfile(side):
         raise CPCError(
-            f"STATE_NOT_FOUND: {side}; repack requires the adjacent workspace state "
-            "created by CPC unpack. Keep the edited project intact. Restore the "
-            "original capsule into a separate directory to recover its state; "
-            "do not invent metadata or overwrite the edited project.")
+            f"STATE_NOT_FOUND: {side}; optional state is unavailable. Repack can "
+            "use current filesystem metadata and normal packing defaults.")
     vals = {}
     with open(side, "rb") as fh:
         data = fh.read(MAX_METADATA + 1)
@@ -1227,23 +1283,25 @@ def recorded_executable_intent(state):
 
 
 def repack(path, output=None, force=False, backup=False, preset=6, mtime=None):
-    _, state = read_sidecar_for(path)
+    state = {}
+    if os.path.isfile(sidecar_path(path)):
+        _, state = read_sidecar_for(path)
     archive_mode = state.get("profile") == "archive"
     out = output or state.get("source") or default_output_for_pack(path)
     # Repack a recovered logical root as exactly that root.
     return pack(path, output=out, force=force, backup=backup,
                 archive_mode=archive_mode, preset=preset,
                 file_exec=recorded_executable_intent(state) if os.name == "nt" else None,
-                mtime=timestamp_policy(state) if mtime is None else mtime)
+                mtime=(timestamp_policy(state) if state else "preserve") if mtime is None else mtime)
 
 def list_capsule(path):
-    info = full_verify(path)
+    info = full_verify(path, strict=False)
     for p in sorted(info["manifest"]):
         print(p)
     return info
 
 def inspect_capsule(path):
-    info = full_verify(path)
+    info = full_verify(path, strict=False)
     st = info["state"]
     return {
         "version": info["version"],
@@ -1258,6 +1316,8 @@ def inspect_capsule(path):
         "capsule_hash": info["capsule_hash"],
         "package_id": info["package_id"],
         "content_id": info["content_id"],
+        "metadata_valid": info["metadata_valid"],
+        "metadata_warning": info["metadata_warning"],
     }
 
 def filesystem_manifest(path, archive_mode=False):
@@ -1418,7 +1478,7 @@ def join_parts(parts, output):
                     raise CPCError('PART_HASH_MISMATCH')
         if total != size or full.hexdigest().encode() != identity:
             raise CPCError('SET_HASH_MISMATCH')
-        full_verify(str(staged))
+        full_verify(str(staged), strict=False)
         if os.path.lexists(output):
             raise CPCError('DEST_EXISTS')
         os.rename(staged, output)
@@ -1473,29 +1533,29 @@ def recovery_handoff(identity, count, size, limit):
         "bootstrap.py only installs launchers and is not required for this workflow.\n\n"
         + recovery + "\n"
         "Use new output paths. Unpack restores the logical root beneath ./recovered,\n"
-        "preserving files and empty directories with executable-intent metadata.\n"
-        "Keep the adjacent .cpc-state file for later repacking. The commands do not\n"
+        "preserving files and empty directories. Unpack creates no sidecar by default.\n"
+        "Add --state if saved policy or Windows executable intent is needed. Commands do not\n"
         "execute recovered project code. No pip install or download is required.\n\n"
         "New packs preserve file and directory modification times by default.\n"
-        "The saved timestamp policy follows the workspace through repack and source\n"
-        "export. Use --normalize-times only when deliberately discarding original\n"
+        "With optional --state, saved policy follows repack and source export. Without\n"
+        "state, repack uses current filesystem metadata. Use --normalize-times to discard\n"
         "dates for compact/reproducible output. Old capsules cannot recover dates\n"
         "that were never recorded. Destination filesystem precision still applies.\n\n"
         "## After editing: return a verified CPC\n\n"
         "Keep cpc-recover.py outside the project and use this same CLI to return it.\n"
         "Do not substitute a homemade TAR/Base64 encoder, fabricate a CPC header,\n"
-        "or hand-write metadata. A matching header hash alone is not CPC validation:\n"
-        "CPC also requires its internal manifest and state.\n\n"
-        "The workspace layout is ./recovered/PROJECT_ROOT beside\n"
-        "./recovered/.PROJECT_ROOT.cpc-state. The sidecar records repack settings and\n"
-        "executable intent; retain it when moving the workspace. It is separate from\n"
-        "the metadata inside the capsule. A valid returned capsule contains its own\n"
-        "metadata, and unpack recreates the sidecar on the receiving machine.\n\n"
+        "or hand-write metadata. The packer generates and verifies fresh metadata.\n"
+        "Basic restore tolerates defective optional metadata with a warning; --strict\n"
+        "requires the complete metadata audit. Neither proves source completeness.\n\n"
+        "The workspace is ./recovered/PROJECT_ROOT. Repack works without state. If\n"
+        "unpack used --state, keep .PROJECT_ROOT.cpc-state beside the project to retain\n"
+        "saved policy and Windows executable flags. Otherwise current filesystem\n"
+        "metadata and normal packing defaults apply. No original capsule is required.\n\n"
         "Replace PROJECT_ROOT below with the actual root name printed by unpack.\n"
         "Run from the scratch directory, only after completing the user's edits:\n\n"
         "```text\n"
         "python -I cpc-recover.py r \"./recovered/PROJECT_ROOT\" -o ./updated.cpc.md\n"
-        "python -I cpc-recover.py v ./updated.cpc.md\n"
+        "python -I cpc-recover.py v ./updated.cpc.md --strict\n"
         "python -I cpc-recover.py c ./updated.cpc.md \"./recovered/PROJECT_ROOT\"\n"
         "python -I cpc-recover.py u ./updated.cpc.md -o ./return-check\n"
         f"python -I cpc-recover.py export ./updated.cpc.md -o ./return-files --max-file-size {limit}\n"
@@ -1503,8 +1563,8 @@ def recovery_handoff(identity, count, size, limit):
         "Use a new return-check directory for each attempt. Every command must exit\n"
         "successfully; compare must report CPC EQUAL. A mismatch may reflect packing\n"
         "exclusions: inspect it and resolve it, rather than claiming a complete return.\n"
-        "If state is missing, stop and report it. Preserve the edited tree; restore the\n"
-        "original capsule separately to recover state without overwriting edits.\n"
+        "Missing optional state does not block packing. On Windows, executable flags\n"
+        "lost without saved state cannot be reconstructed from file contents reliably.\n"
         "If Python, lzma, the supplied CLI or attachment files are unavailable, report\n"
         "that limitation instead of inventing another format.\n\n"
         "Return every downloadable file from ./return-files: the capsule if it fits,\n"
@@ -1535,7 +1595,7 @@ def export_capsule(capsule, output, limit=DEFAULT_EXPORT_LIMIT):
         raise CPCError('EXPORT_LIMIT_TOO_SMALL')
     if os.path.lexists(output):
         raise CPCError('DEST_EXISTS')
-    full_verify(str(capsule))
+    full_verify(str(capsule), strict=False)
     size = capsule.stat().st_size
     identity = file_sha256(capsule)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1556,7 +1616,7 @@ def export_capsule(capsule, output, limit=DEFAULT_EXPORT_LIMIT):
                     raise CPCError('SOURCE_CHANGED')
             if dest.stat().st_size != size or file_sha256(dest) != identity:
                 raise CPCError('SOURCE_CHANGED')
-            full_verify(str(dest))
+            full_verify(str(dest), strict=False)
             count = 1
         else:
             capacity = limit-PART_HEADER_SIZE
@@ -1651,6 +1711,10 @@ def parser():
     p.add_argument("-b", "--backup", action="store_true")
     p.add_argument("-q", "--quiet", action="store_true")
     p.add_argument("-V", "--verbose", action="store_true")
+    p.add_argument("--strict", action="store_true",
+                   help="unpack/verify: require the full CPC metadata audit")
+    p.add_argument("--state", action="store_true",
+                   help="unpack: save optional adjacent state for policy and Windows executable intent")
     p.add_argument("-a", "--archive", action="store_true")
     compression = p.add_mutually_exclusive_group()
     compression.add_argument("-m", "--max", action="store_true")
@@ -1677,6 +1741,12 @@ def main(argv=None):
     preset = 9 | lzma.PRESET_EXTREME if ns.max else ns.preset
 
     try:
+        action = args[0] if args else None
+        implicit_unpack = bool(action and is_capsule(action))
+        if ns.strict and action not in ("u", "unpack", "v", "verify") and not implicit_unpack:
+            raise CPCError("STRICT_OPTION: use with unpack or verify")
+        if ns.state and action not in ("u", "unpack") and not implicit_unpack:
+            raise CPCError("STATE_OPTION: use with unpack")
         if args and args[0] == "recover":
             if (len(args) != 2 or not ns.output or ns.force or ns.backup or ns.archive
                     or ns.include or ns.exclude or ns.max or ns.preset != 6
@@ -1732,7 +1802,8 @@ def main(argv=None):
         if verb is None:
             target = args[0]
             if is_capsule(target):
-                out, side, info = unpack(target, ns.output, ns.force, ns.backup, mtime=ns.mtime)
+                out, side, info = unpack(target, ns.output, ns.force, ns.backup, mtime=ns.mtime,
+                                         strict=ns.strict, keep_state=ns.state)
                 if not ns.quiet:
                     print(f"CPC PASS files={info['user_members']}")
                     print(f"-> {out}")
@@ -1758,7 +1829,8 @@ def main(argv=None):
         if verb in ("u","unpack"):
             if len(args) != 2:
                 raise CPCError("USAGE: cpc u <capsule>")
-            out, side, info = unpack(args[1], ns.output, ns.force, ns.backup, mtime=ns.mtime)
+            out, side, info = unpack(args[1], ns.output, ns.force, ns.backup, mtime=ns.mtime,
+                                     strict=ns.strict, keep_state=ns.state)
             if not ns.quiet:
                 print(f"CPC PASS files={info['user_members']}")
                 print(f"-> {out}")
@@ -1778,9 +1850,10 @@ def main(argv=None):
         if verb in ("v","verify"):
             if len(args) != 2:
                 raise CPCError("USAGE: cpc v <capsule>")
-            info = full_verify(args[1])
+            info = full_verify(args[1], strict=ns.strict)
             if not ns.quiet:
                 print(f"CPC PASS v={info['version']} files={info['user_members']} packed={human_bytes(info['carrier_size'])}")
+                print("metadata=" + ("verified" if info['metadata_valid'] else "unverified"))
                 print(f"content={info['content_id']}")
             return 0
 
@@ -1826,7 +1899,7 @@ def main(argv=None):
             portable_name_check(newroot)
             temp = tempfile.mkdtemp(prefix="cpc-rename-")
             try:
-                oldroot, _, info = unpack(cap, output=temp, mtime=ns.mtime)
+                oldroot, _, info = unpack(cap, output=temp, mtime=ns.mtime, strict=True, keep_state=True)
                 _, saved = read_sidecar_for(oldroot)
                 renamed = os.path.join(temp, newroot)
                 os.replace(oldroot, renamed)

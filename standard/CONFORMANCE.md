@@ -34,7 +34,14 @@
 - repack a fresh archive;
 - preserve content ID for unchanged represented content;
 - compare actual filesystem bytes/types against capsule state;
-- maintain enough sidecar state to avoid relying on conversational memory.
+- work without a sidecar, with optional state for settings the filesystem cannot retain.
+
+Basic readers MUST retain transport and archive-safety checks while treating
+custom CPC metadata as optional. They MUST warn when its audit fails and MUST
+NOT let unverified state control extraction paths. Full-audit readers additionally
+require the internal state and manifest. Reference writers still emit and
+strictly verify full-profile output. A matching hash does not establish that
+the sender selected every intended file or authenticate the sender.
 
 ## Recommended status vocabulary
 

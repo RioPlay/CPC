@@ -32,6 +32,8 @@ jobs:
         run: python tests/test_timestamps.py
       - name: Explicit recovery and shared safety regressions
         run: python tests/test_recovery.py
+      - name: Basic transport and stateless round trips
+        run: python tests/test_basic.py
       - name: CLI smoke test
         run: python bin/cpc.py --version
       - name: Verify bundled capsules

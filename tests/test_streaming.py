@@ -108,10 +108,10 @@ class StreamingTests(unittest.TestCase):
         (old / "keep.txt").write_bytes(b"original")
         with patch.object(cpc.shutil, "copyfileobj", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
-                cpc.unpack(str(self.cap), str(out), force=True)
+                cpc.unpack(str(self.cap), str(out), force=True, keep_state=True)
         self.assertEqual((old / "keep.txt").read_bytes(), b"original")
         self.assertFalse(list(out.glob(".cpc-stage-*")))
-        cpc.unpack(str(self.cap), str(out), backup=True)
+        cpc.unpack(str(self.cap), str(out), backup=True, keep_state=True)
         self.assertEqual((out / "Project.bak/keep.txt").read_bytes(), b"original")
         self.assertEqual((old / "main.py").read_bytes(), b"print('hello')\r\n")
 
@@ -150,7 +150,7 @@ class StreamingTests(unittest.TestCase):
         cpc.pack(str(self.source), str(self.cap), preset=6,
                  file_exec={"run.sh": True, "data.exe": False})
         before = cpc.full_verify(str(self.cap))
-        restored, side, _ = cpc.unpack(str(self.cap), str(self.root / "out"))
+        restored, side, _ = cpc.unpack(str(self.cap), str(self.root / "out"), keep_state=True)
         restored = Path(restored)
         _, state = cpc.read_sidecar_for(str(restored))
         intent = cpc.recorded_executable_intent(state)
@@ -176,7 +176,7 @@ class StreamingTests(unittest.TestCase):
         script = self.root / "run.sh"
         script.write_bytes(b"#!/bin/sh\necho hello\n")
         cpc.pack(str(script), str(self.cap), preset=6, file_exec={".": True})
-        restored, _, original = cpc.unpack(str(self.cap), str(self.root / "out"))
+        restored, _, original = cpc.unpack(str(self.cap), str(self.root / "out"), keep_state=True)
         result = cpc.repack(restored, str(self.root / "returned.cpc.md"), preset=6)
         self.assertEqual(result["content_id"], original["content_id"])
 
@@ -184,7 +184,7 @@ class StreamingTests(unittest.TestCase):
     def test_posix_chmod_overrides_recorded_intent(self):
         (self.source / "run.sh").write_bytes(b"#!/bin/sh\necho hello\n")
         cpc.pack(str(self.source), str(self.cap), preset=6, file_exec={"run.sh": True})
-        restored, _, _ = cpc.unpack(str(self.cap), str(self.root / "out"))
+        restored, _, _ = cpc.unpack(str(self.cap), str(self.root / "out"), keep_state=True)
         (Path(restored) / "run.sh").chmod(0o644)
         (Path(restored) / "main.py").chmod(0o755)
         changed = self.root / "chmod.cpc.md"
@@ -197,7 +197,7 @@ class StreamingTests(unittest.TestCase):
 
     def test_old_sidecar_without_executable_map_still_works(self):
         cpc.pack(str(self.source), str(self.cap), preset=6)
-        restored, side, _ = cpc.unpack(str(self.cap), str(self.root / "out"))
+        restored, side, _ = cpc.unpack(str(self.cap), str(self.root / "out"), keep_state=True)
         p = Path(side)
         p.write_text("\n".join(line for line in p.read_text().splitlines()
                               if not line.startswith("file_exec=")) + "\n")

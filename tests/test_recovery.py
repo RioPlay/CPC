@@ -73,7 +73,7 @@ class RecoveryTests(unittest.TestCase):
                       (executable, b'#!/bin/sh\necho ok\n'),
                       ('other/readme.md', b'other'), ('empty', None)])
         before = self.cap.read_bytes()
-        code, out, err = self.cli('u', self.cap, '-o', self.root/'strict')
+        code, out, err = self.cli('u', self.cap, '-o', self.root/'strict', '--strict')
         self.assertEqual(code, 2)
         self.assertIn('cpc recover', err)
         self.assertFalse((self.root/'strict').exists())

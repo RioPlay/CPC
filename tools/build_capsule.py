@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     ".cpcignore", ".gitattributes", ".gitignore",
     ".github/workflows/ci.yml",
-    "README.md", "FAQ.md", "CONTRIBUTING.md", "GOVERNANCE.md",
+    "README.md", "FAQ.md", "ROADMAP.md", "CONTRIBUTING.md", "GOVERNANCE.md",
     "LICENSE", "PROJECT.json", "SECURITY.md",
     "bin/cpc.py", "bootstrap.py", "install.ps1", "install.sh",
     "demo_project/README.md", "demo_project.cpc.md",
@@ -22,7 +22,7 @@ FILES = (
     "standard/STANDARD.json", "standard/TEST_VECTOR.md",
     "standard/test-vector.cpc.md", "tests/test_cpc.py", "tests/test_security.py",
     "tests/test_streaming.py", "tests/test_export.py", "tests/test_timestamps.py",
-    "tests/test_recovery.py", "tools/build_capsule.py", "tools/measure_sizes.py",
+    "tests/test_recovery.py", "tests/test_basic.py", "tools/build_capsule.py", "tools/measure_sizes.py",
     "tools/profile_resources.py",
 )
 

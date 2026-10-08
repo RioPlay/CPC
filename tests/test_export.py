@@ -226,7 +226,7 @@ class MultipartTests(unittest.TestCase):
                 self.assertEqual((cold/'reconstructed.cpc.md').read_bytes(), self.cap.read_bytes())
                 restored = subprocess.run(
                     [sys.executable, '-I', 'cpc-recover.py', 'u', './reconstructed.cpc.md',
-                     '-o', './recovered'], cwd=cold,
+                     '-o', './recovered', '--state'], cwd=cold,
                     capture_output=True, text=True, timeout=30)
                 self.assertEqual(restored.returncode, 0, restored.stderr)
                 self.assertNotIn('PROJECT_CODE_MUST_NOT_RUN', restored.stdout)
@@ -281,7 +281,7 @@ class MultipartTests(unittest.TestCase):
                 else:
                     shutil.copyfile(attachments/self.cap.name, cold/'input.cpc.md')
                 run('v', original)
-                run('u', original, '-o', './recovered')
+                run('u', original, '-o', './recovered', '--state')
                 tree = cold/'recovered/Project'
                 (tree/'run.sh').write_bytes(b'#!/bin/sh\necho edited\n')
                 (tree/'new.txt').write_bytes(b'new work\n')
@@ -298,7 +298,7 @@ class MultipartTests(unittest.TestCase):
                     run('join', './return-files', '-o', './returned.cpc.md')
                 else:
                     shutil.copyfile(returned/'updated.cpc.md', cold/'returned.cpc.md')
-                run('u', './returned.cpc.md', '-o', './next-sandbox')
+                run('u', './returned.cpc.md', '-o', './next-sandbox', '--state')
                 next_tree = cold/'next-sandbox/Project'
                 for rel in ('source.bin', 'run.sh', 'new.txt'):
                     self.assertEqual((next_tree/rel).read_bytes(), (tree/rel).read_bytes())
@@ -307,12 +307,10 @@ class MultipartTests(unittest.TestCase):
                 self.assertEqual((next_tree/'empty').stat().st_mtime_ns, (tree/'empty').stat().st_mtime_ns)
                 _, state = m.read_sidecar_for(str(next_tree))
                 self.assertTrue(m.recorded_executable_intent(state)['run.sh'])
-                # Missing local metadata must not silently cause a fresh pack.
+                # Removing optional state must not prevent a fresh valid pack.
                 (cold/'recovered/.Project.cpc-state').unlink()
-                failed = run('r', './recovered/Project', '-o', './should-not-exist.cpc.md', expected=2)
-                self.assertIn('STATE_NOT_FOUND', failed.stderr)
-                self.assertIn('Keep the edited project intact', failed.stderr)
-                self.assertFalse((cold/'should-not-exist.cpc.md').exists())
+                run('r', './recovered/Project', '-o', './stateless.cpc.md')
+                run('v', './stateless.cpc.md', '--strict')
                 self.assertEqual((tree/'new.txt').read_bytes(), b'new work\n')
 
 

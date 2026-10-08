@@ -45,6 +45,26 @@ A conforming CPC implementation MUST preserve these principles:
 
 ## 3. Normative CPC envelope
 
+### Reader profiles
+
+The **basic transport reader** requires the envelope and compressed SHA-256,
+bounded complete XZ decompression, and complete safe TAR structure. Internal
+`.cpc/state` and `.cpc/manifest` are optional for basic restoration. The reference
+reader attempts the full audit; failure MUST be reported as a metadata warning,
+and unverified state MUST NOT control the extraction layout. Archive paths remain
+authoritative. Missing explicit parent directories may be created; ambiguous,
+unsafe or conflicting paths remain errors.
+
+The **full metadata audit** additionally enforces the internal state, manifest
+and per-file consistency requirements below. The reference CLI exposes this as
+`u --strict` and `v --strict`. The reference writer continues to generate and
+verify full-profile capsules, preserving compatibility with older readers.
+Those readers require metadata and may reject basic-profile input. This change
+broadens the documented reader profile; it does not change the v1 envelope or
+compression chain. Neither profile proves sender identity or source selection
+completeness. Manifest/layout requirements below apply to the full profile;
+path/type/resource and transport-integrity requirements apply to both.
+
 A canonical CPC capsule has this exact structure:
 
 ```text
@@ -113,9 +133,9 @@ extract selected user content
 
 A reader MUST validate the archive before publishing recovered content.
 
-### 4.1 Explicit nonconforming-archive recovery
+### 4.1 Evidence-preserving recovery
 
-An implementation MAY provide a separate, explicitly selected recovery operation for an intact v1 carrier whose inner CPC metadata is missing or inconsistent. It MUST NOT silently fall back to recovery during ordinary verification or unpack, or report a recovered nonconforming input as CPC-valid. Recovery MUST retain outer hash verification, complete bounded decompression, path/type/duplicate checks, and all resource ceilings. Missing implied directory entries MAY be created from validated file paths. Conflicting paths or file/directory types MUST NOT be guessed or merged.
+An implementation MAY provide a separate recovery operation that additionally preserves original CPC metadata as evidence. Basic restoration already accepts missing/inconsistent metadata with a warning; it MUST NOT claim the full metadata audit passed. Explicit recovery MUST retain outer hash verification, complete bounded decompression, path/type/duplicate checks, and all resource ceilings. Missing implied directory entries MAY be created from validated file paths. Conflicting paths or file/directory types MUST NOT be guessed or merged.
 
 The reference `recover` operation retains all archived user paths beneath a new `files/` directory without interpreting a claimed logical root. Original `.cpc` entries are isolated under `metadata/.cpc/`; a report records the first CPC metadata failure and the limits of recovery. Fresh adjacent workspace state is generated from archive member facts. Stale manifest hashes are diagnostics in this mode only, and do not establish the correctness or completeness of recovered content. Any subsequent valid CPC is a new package, verified against its newly generated metadata. Recovery does not reconstruct missing data or validate a damaged outer carrier.
 
@@ -436,7 +456,7 @@ Repack MUST create a fresh archive from the current recovered workspace.
 
 It MUST NOT patch the old compressed payload in place.
 
-A recovered workspace SHOULD have an adjacent CPC sidecar that records:
+A recovered workspace MAY have an adjacent CPC sidecar that records:
 
 ```text
 format version
@@ -449,9 +469,21 @@ prior content ID
 per-file executable intent where the local filesystem cannot represent it
 ```
 
-The sidecar is operational metadata, not user project content.
+The sidecar is optional operational metadata, not user project content. The
+reference unpacker creates it only with `--state`; explicit evidence recovery
+also creates fresh state. Repack MUST work without it, using current filesystem
+metadata and normal packing defaults. No original capsule is required. Absent
+state cannot preserve policy choices or Unix executable flags lost on Windows.
 
-The `mtime` policy is inherited by repack and export of a restored source tree unless explicitly overridden. Repack reads current filesystem modification times, including dates of edited/new files; it does not reapply an old timestamp table. Sidecars without the key inherit legacy normalization. Precision lost to a destination filesystem is not reconstructed on a later repack.
+For basic input with a single top-level item, the reader uses its actual name as
+the root and treats `-o` as the containing directory. With multiple top-level
+items and no verified root, `-o` MUST name the exact output directory. The reader
+MUST NOT guess a logical root from the capsule filename. Whole-tree replacement
+and backup operate on that resolved destination. Existing adjacent state MUST
+not be silently reused after a stateless replacement; the reference reader
+requires it to be explicitly refreshed with `--state` or moved aside.
+
+The `mtime` policy is inherited by repack/export when optional state exists, unless explicitly overridden. Without state they default to preservation. Repack reads current filesystem modification times, including dates of edited/new files; it does not reapply an old timestamp table. Existing sidecars without the key inherit legacy normalization. Precision lost to a destination filesystem is not reconstructed on a later repack.
 
 The reference sidecar optionally stores `file_exec` as a JSON object mapping root-relative file paths to booleans (`.` represents a single-file root). Windows repack and compare use these recorded flags for matching paths. POSIX filesystems remain authoritative for executable-bit changes. Older sidecars without this field use the original filesystem-based behavior. The wire format does not change.
 

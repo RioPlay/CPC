@@ -32,7 +32,7 @@ Yes. Nested archives are preserved as opaque bytes by default.
 
 File contents are byte-preserved. Archive mode includes every supported regular file/directory. CPC is not a full filesystem-backup format for ACLs, xattrs, device nodes, etc.
 
-New packs also preserve file and directory modification times, subject to the receiving filesystem's range and precision. Use `--normalize-times` for compact/reproducible packaging when original dates are unnecessary. Repack remembers the selected policy. Old capsules cannot recover modification dates they never stored.
+New packs also preserve file and directory modification times, subject to the receiving filesystem's range and precision. Use `--normalize-times` for compact/reproducible packaging when original dates are unnecessary. Repack remembers the selected policy when optional `--state` was saved; otherwise it uses current filesystem metadata and defaults. Old capsules cannot recover modification dates they never stored.
 
 ## Does a generated capsule inherit CPC's MIT license?
 
@@ -44,7 +44,7 @@ No. Run `python bin/cpc.py` directly from the downloaded project. Other implemen
 
 ## What if an LLM returns an archive that fails CPC validation?
 
-Use `cpc recover returned.cpc.md -o new-recovery/` when the outer CPC encoding and archive remain intact. Recovery accepts missing or inconsistent CPC metadata, recreates implied directories, and keeps original paths beneath `new-recovery/files/`. It retains original metadata separately and writes a diagnostic report. It does not bypass unsafe paths, resource ceilings, or outer hash failures. `cpc r new-recovery/files/ -o repaired.cpc.md` creates and verifies fresh metadata from those recovered contents; it cannot prove the original project was complete.
+Ordinary `cpc u` now accepts intact transport archives with defective optional metadata and warns. Use `--strict` to require the full audit, or `cpc recover returned.cpc.md -o new-recovery/` to retain original metadata and a diagnostic report separately. Recovery accepts missing or inconsistent CPC metadata, recreates implied directories, and keeps original paths beneath `new-recovery/files/`. It retains original metadata separately and writes a diagnostic report. It does not bypass unsafe paths, resource ceilings, or outer hash failures. `cpc r new-recovery/files/ -o repaired.cpc.md` creates and verifies fresh metadata from those recovered contents; it cannot prove the original project was complete.
 
 ## Who maintains CPC?
 
