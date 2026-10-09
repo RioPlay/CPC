@@ -69,7 +69,7 @@ class TimestampTests(unittest.TestCase):
     def test_default_restore_and_unchanged_repack(self):
         result = cpc.pack(str(self.project), str(self.cap))
         self.assertEqual(result['mtime'], 'preserve')
-        restored, side, info = cpc.unpack(str(self.cap), str(self.root/'restored'), strict=True, keep_state=True)
+        restored, side, info = cpc.unpack(str(self.cap), str(self.root/'restored'), strict=True, keep_state=True, original_root=True)
         self.assertEqual(self.tree_times(Path(restored)), self.times)
         self.assertEqual(cpc.read_sidecar_for(restored)[1]['mtime'], 'preserve')
         self.assertEqual(cpc.inspect_capsule(str(self.cap))['mtime'], 'preserve')
@@ -84,7 +84,7 @@ class TimestampTests(unittest.TestCase):
 
     def test_repack_uses_current_times_after_edits(self):
         cpc.pack(str(self.project), str(self.cap))
-        restored, _, _ = cpc.unpack(str(self.cap), str(self.root/'restored'), strict=True, keep_state=True)
+        restored, _, _ = cpc.unpack(str(self.cap), str(self.root/'restored'), strict=True, keep_state=True, original_root=True)
         tree = Path(restored)
         p = tree/'source.txt'
         p.write_bytes(b'edited')
@@ -109,7 +109,7 @@ class TimestampTests(unittest.TestCase):
         self.assertEqual(info['state']['mtime'], 'normalize')
         self.assertTrue(all(cpc.member_mtime_ns(m) == 0 for m in info['members']))
         with patch.object(cpc.os, 'utime') as setter:
-            restored, _, _ = cpc.unpack(str(other), str(self.root/'restore'), strict=True, keep_state=True)
+            restored, _, _ = cpc.unpack(str(other), str(self.root/'restore'), strict=True, keep_state=True, original_root=True)
             setter.assert_not_called()
         returned = self.root/'returned.cpc.md'
         self.cli('r', restored, '-o', returned)
@@ -120,7 +120,7 @@ class TimestampTests(unittest.TestCase):
     def test_unpack_override_is_remembered_and_normalized_dates_are_not_invented(self):
         cpc.pack(str(self.project), str(self.cap))
         self.cli('u', self.cap, '-o', self.root/'restore', '--normalize-times', '--state')
-        restored = self.root/'restore/Project'
+        restored = self.root/'restore/original'
         self.assertEqual(cpc.read_sidecar_for(str(restored))[1]['mtime'], 'normalize')
         normalized = self.root/'normalized.cpc.md'
         cpc.repack(str(restored), str(normalized))
@@ -174,7 +174,7 @@ class TimestampTests(unittest.TestCase):
 
     def test_timestamp_failure_does_not_replace_existing_destination(self):
         cpc.pack(str(self.project), str(self.cap))
-        old = self.root/'restore/Project'
+        old = self.root/'restore/original'
         old.mkdir(parents=True)
         (old/'keep.txt').write_bytes(b'keep')
         with patch.object(cpc.os, 'utime', side_effect=PermissionError('denied')):
@@ -182,7 +182,7 @@ class TimestampTests(unittest.TestCase):
                 cpc.unpack(str(self.cap), str(old.parent), force=True, strict=True, keep_state=True)
         self.assertEqual((old/'keep.txt').read_bytes(), b'keep')
         self.assertFalse(list(old.parent.glob('.cpc-stage-*')))
-        self.assertFalse((old.parent/'.Project.cpc-state').exists())
+        self.assertFalse((old.parent/'.original.cpc-state').exists())
 
     def test_malformed_dates_and_policy_fail_before_writes(self):
         cpc.pack(str(self.project), str(self.cap))

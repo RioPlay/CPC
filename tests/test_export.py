@@ -230,7 +230,7 @@ class MultipartTests(unittest.TestCase):
                     capture_output=True, text=True, timeout=30)
                 self.assertEqual(restored.returncode, 0, restored.stderr)
                 self.assertNotIn('PROJECT_CODE_MUST_NOT_RUN', restored.stdout)
-                tree = cold/'recovered/Project'
+                tree = cold/'recovered/reconstructed'
                 self.assertTrue((tree/'empty').is_dir())
                 for path in source.iterdir():
                     if path.is_file():
@@ -282,12 +282,12 @@ class MultipartTests(unittest.TestCase):
                     shutil.copyfile(attachments/self.cap.name, cold/'input.cpc.md')
                 run('v', original)
                 run('u', original, '-o', './recovered', '--state')
-                tree = cold/'recovered/Project'
+                tree = cold/'recovered/input'
                 (tree/'run.sh').write_bytes(b'#!/bin/sh\necho edited\n')
                 (tree/'new.txt').write_bytes(b'new work\n')
-                run('r', './recovered/Project', '-o', './updated.cpc.md')
+                run('r', './recovered/input', '-o', './updated.cpc.md')
                 run('v', './updated.cpc.md')
-                self.assertIn('CPC EQUAL', run('c', './updated.cpc.md', './recovered/Project').stdout)
+                self.assertIn('CPC EQUAL', run('c', './updated.cpc.md', './recovered/input').stdout)
                 run('u', './updated.cpc.md', '-o', './return-check')
                 run('export', './updated.cpc.md', '-o', './return-files',
                     '--max-file-size', str(limit))
@@ -299,7 +299,7 @@ class MultipartTests(unittest.TestCase):
                 else:
                     shutil.copyfile(returned/'updated.cpc.md', cold/'returned.cpc.md')
                 run('u', './returned.cpc.md', '-o', './next-sandbox', '--state')
-                next_tree = cold/'next-sandbox/Project'
+                next_tree = cold/'next-sandbox/returned'
                 for rel in ('source.bin', 'run.sh', 'new.txt'):
                     self.assertEqual((next_tree/rel).read_bytes(), (tree/rel).read_bytes())
                     self.assertEqual((next_tree/rel).stat().st_mtime_ns, (tree/rel).stat().st_mtime_ns)
@@ -308,8 +308,8 @@ class MultipartTests(unittest.TestCase):
                 _, state = m.read_sidecar_for(str(next_tree))
                 self.assertTrue(m.recorded_executable_intent(state)['run.sh'])
                 # Removing optional state must not prevent a fresh valid pack.
-                (cold/'recovered/.Project.cpc-state').unlink()
-                run('r', './recovered/Project', '-o', './stateless.cpc.md')
+                (cold/'recovered/.input.cpc-state').unlink()
+                run('r', './recovered/input', '-o', './stateless.cpc.md')
                 run('v', './stateless.cpc.md', '--strict')
                 self.assertEqual((tree/'new.txt').read_bytes(), b'new work\n')
 

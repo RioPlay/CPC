@@ -479,9 +479,14 @@ metadata and normal packing defaults. No original capsule is required. Absent
 state cannot preserve policy choices or Unix executable flags lost on Windows.
 
 For basic input with a single top-level item, the reader uses its actual name as
-the root and treats `-o` as the containing directory. With multiple top-level
+the archive root and treats `-o` as the containing directory. The reference CLI
+names restored project folders after the capsule filename, stripping `.cpc.md`
+case-insensitively or otherwise its final extension. `--original-root` retains
+the archived folder name; single-file capsules retain their archived filename.
+The output folder name changes only the publication destination; validation
+still uses the original archive paths, and child paths are preserved. With multiple top-level
 items and no verified root, `-o` MUST name the exact output directory. The reader
-MUST NOT guess a logical root from the capsule filename. Whole-tree replacement
+MUST NOT guess an archive layout from the capsule filename. Whole-tree replacement
 and backup operate on that resolved destination. Existing adjacent state MUST
 not be silently reused after a stateless replacement; the reference reader
 requires it to be explicitly refreshed with `--state` or moved aside.

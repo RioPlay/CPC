@@ -1060,7 +1060,7 @@ def write_state_sidecar(dest_root, capsule_path, info):
     return sidecar
 
 def unpack(capsule, output=None, force=False, backup=False, selected=None, mtime=None,
-           strict=False, keep_state=False):
+           strict=False, keep_state=False, original_root=False):
     capsule = os.path.abspath(capsule)
     with verified_capsule(capsule, strict=strict) as info:
         warn_metadata(info)
@@ -1069,7 +1069,7 @@ def unpack(capsule, output=None, force=False, backup=False, selected=None, mtime
             if mtime == "preserve" and timestamp_policy(info["state"]) != "preserve":
                 raise CPCError("TIMESTAMPS_UNAVAILABLE: original dates were not recorded")
             info["state"] = dict(info["state"], mtime=mtime)
-        return unpack_verified(capsule, info, output, force, backup, selected, keep_state)
+        return unpack_verified(capsule, info, output, force, backup, selected, keep_state, original_root)
 
 
 def extract_members(raw, members, destination, mtime):
@@ -1173,7 +1173,24 @@ def recover(capsule, output, mtime=None):
     return dict(report, output=output)
 
 
-def unpack_verified(capsule, info, output, force, backup, selected, keep_state=False):
+def capsule_folder_name(capsule):
+    name = os.path.basename(capsule)
+    if name.lower().endswith(".cpc.md"):
+        name = name[:-7]
+    else:
+        name = os.path.splitext(name)[0]
+    try:
+        portable_name_check(name)
+    except CPCError as error:
+        raise CPCError("CAPSULE_NAME: rename the capsule to a portable project name "
+                       "or use --original-root") from error
+    if name.lower() == META_ROOT:
+        raise CPCError("CAPSULE_NAME: .cpc is reserved; rename the capsule or use --original-root")
+    return name
+
+
+def unpack_verified(capsule, info, output, force, backup, selected, keep_state=False,
+                    original_root=False):
     state = info["state"]
     root_name = state.get("root")
     flat = not root_name
@@ -1183,18 +1200,21 @@ def unpack_verified(capsule, info, output, force, backup, selected, keep_state=F
             raise CPCError("MULTIPLE_ROOTS: use -o to name the complete destination directory")
         final_root = os.path.abspath(output)
     elif selected is None:
-        if output:
-            dest_parent = os.path.abspath(output)
-            # explicit output is the containing destination for logical root
-            final_root = os.path.join(dest_parent, root_name)
-        else:
-            final_root = os.path.join(os.path.dirname(capsule), root_name)
+        # Only the outer folder is renamed; file capsules retain their actual
+        # filename/extension and all paths inside a project remain unchanged.
+        folder = not any(m.name == root_name and m.isfile() for m in info["members"])
+        name = capsule_folder_name(capsule) if folder and not original_root else root_name
+        dest_parent = os.path.abspath(output) if output else os.path.dirname(capsule)
+        final_root = os.path.join(dest_parent, name)
     else:
         # selected extraction output is destination directory itself.
         final_root = os.path.abspath(output or (os.path.splitext(os.path.basename(capsule))[0] + ".extract"))
 
+    if os.path.normcase(os.path.abspath(final_root)) == os.path.normcase(os.path.abspath(capsule)):
+        raise CPCError("OUTPUT_IS_CAPSULE: choose another -o parent or rename the capsule with .cpc.md")
     if os.path.lexists(final_root) and not (force or backup):
-        raise CPCError(f"DEST_EXISTS: {final_root}")
+        raise CPCError(f"DEST_EXISTS: {final_root}; rename the capsule for a separate folder, "
+                       "choose another -o parent, or use -b (backup) / -f (replace)")
     if not keep_state and selected is None and os.path.lexists(sidecar_path(final_root)):
         raise CPCError("STATE_EXISTS: an older adjacent .cpc-state exists; use --state to refresh it "
                        "or move it aside before a stateless restore")
@@ -1220,7 +1240,13 @@ def unpack_verified(capsule, info, output, force, backup, selected, keep_state=F
             if not os.path.exists(staged_root):
                 raise CPCError("MISSING_LOGICAL_ROOT")
             publish_extraction(staged_root, final_root, force, backup)
-            sidecar = write_state_sidecar(final_root, capsule, info) if keep_state else None
+            sidecar = None
+            if keep_state:
+                logical = os.path.basename(final_root)
+                fresh = dict(info, state=dict(state, root=logical), manifest={
+                    logical + name[len(root_name):]: record
+                    for name, record in info['manifest'].items()})
+                sidecar = write_state_sidecar(final_root, capsule, fresh)
         else:
             # publish stage contents as requested output directory
             publish_extraction(stage, final_root, force, backup)
@@ -1416,6 +1442,13 @@ def compare(capsule, path):
     info = full_verify(capsule)
     archive_mode = info["state"].get("profile") == "archive"
     current = filesystem_manifest(path, archive_mode)
+    # The workspace's containing folder may follow the capsule filename.
+    # Compare the same project-relative paths against the archived root.
+    current_root = os.path.basename(os.path.abspath(path).rstrip(os.sep))
+    archived_root = info["state"]["root"]
+    if info["manifest"][archived_root][0] == "d" and current_root != archived_root:
+        current = {archived_root + name[len(current_root):]: record
+                   for name, record in current.items()}
     expected = info["manifest"]
 
     added = sorted(set(current) - set(expected))
@@ -1607,7 +1640,9 @@ def recovery_handoff(identity, count, size, limit):
         "packing and repacking. python3 may be the interpreter name. Run it directly;\n"
         "bootstrap.py only installs launchers and is not required for this workflow.\n\n"
         + recovery + "\n"
-        "Use new output paths. Unpack restores the logical root beneath ./recovered,\n"
+        "Use new output paths. A folder capsule named reconstructed.cpc.md restores\n"
+        "directly into ./recovered/reconstructed. --original-root uses its archived\n"
+        "folder name instead. The project contents are kept together,\n"
         "preserving files and empty directories. Unpack creates no sidecar by default.\n"
         "Add --state if saved policy or Windows executable intent is needed. Commands do not\n"
         "execute recovered project code. No pip install or download is required.\n\n"
@@ -1790,6 +1825,8 @@ def parser():
                    help="unpack/verify: require the full CPC metadata audit")
     p.add_argument("--state", action="store_true",
                    help="unpack: save optional adjacent state for policy and Windows executable intent")
+    p.add_argument("--original-root", action="store_true",
+                   help="unpack: use the archived folder name instead of the capsule filename")
     p.add_argument("-a", "--archive", action="store_true")
     compression = p.add_mutually_exclusive_group()
     compression.add_argument("-m", "--max", action="store_true")
@@ -1822,6 +1859,8 @@ def main(argv=None):
             raise CPCError("STRICT_OPTION: use with unpack or verify")
         if ns.state and action not in ("u", "unpack") and not implicit_unpack:
             raise CPCError("STATE_OPTION: use with unpack")
+        if ns.original_root and action not in ("u", "unpack") and not implicit_unpack:
+            raise CPCError("ORIGINAL_ROOT_OPTION: use with unpack")
         if args and args[0] == "recover":
             if (len(args) != 2 or not ns.output or ns.force or ns.backup or ns.archive
                     or ns.include or ns.exclude or ns.max or ns.preset != 6
@@ -1878,7 +1917,7 @@ def main(argv=None):
             target = args[0]
             if is_capsule(target):
                 out, side, info = unpack(target, ns.output, ns.force, ns.backup, mtime=ns.mtime,
-                                         strict=ns.strict, keep_state=ns.state)
+                                         strict=ns.strict, keep_state=ns.state, original_root=ns.original_root)
                 if not ns.quiet:
                     print(f"CPC PASS files={info['user_members']}")
                     print(f"-> {out}")
@@ -1905,7 +1944,7 @@ def main(argv=None):
             if len(args) != 2:
                 raise CPCError("USAGE: cpc u <capsule>")
             out, side, info = unpack(args[1], ns.output, ns.force, ns.backup, mtime=ns.mtime,
-                                     strict=ns.strict, keep_state=ns.state)
+                                     strict=ns.strict, keep_state=ns.state, original_root=ns.original_root)
             if not ns.quiet:
                 print(f"CPC PASS files={info['user_members']}")
                 print(f"-> {out}")
@@ -1975,7 +2014,8 @@ def main(argv=None):
             temp = tempfile.mkdtemp(prefix="cpc-rename-")
             retain_temp = False
             try:
-                oldroot, _, info = unpack(cap, output=temp, mtime=ns.mtime, strict=True, keep_state=True)
+                oldroot, _, info = unpack(cap, output=temp, mtime=ns.mtime, strict=True, keep_state=True,
+                                         original_root=True)
                 _, saved = read_sidecar_for(oldroot)
                 renamed = os.path.join(temp, newroot)
                 os.replace(oldroot, renamed)

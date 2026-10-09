@@ -123,20 +123,24 @@ Repack generates a fresh, strictly verified capsule from the current tree. It us
 
 Normal `u` and `v` require the v1 envelope, matching compressed-payload SHA-256, complete bounded XZ decoding, and a safe complete TAR. Custom CPC state and manifests are optional for these operations. Missing, malformed or stale metadata produces a warning (including with `-q`); the reader uses actual archive paths instead. `v` reports whether the metadata audit also passed. Use `cpc v capsule.cpc.md --strict` or `cpc u capsule.cpc.md --strict` when the full metadata audit is required. The reference packer always emits and strictly verifies complete metadata, so its output remains readable by older CPC readers. Those readers still reject metadata-deficient input accepted by this broader basic-reader profile.
 
-Unpack writes project contents only by default. With one top-level file/folder, `-o` is its containing directory; missing explicit parent entries are created. With multiple top-level items and no valid logical root, `-o` is required and names the exact destination containing all archived paths. There is no filename-based root guess. Reserved top-level `.cpc` records stay inside the input capsule; use `recover` if a separate evidence report is wanted.
+Unpack writes project contents only by default. A folder capsule named `Project-v2.cpc.md` restores directly into `Project-v2/`, even if its archived folder was called `Project/`. Renaming the capsule gives each version a separate destination without nesting the old folder inside the new one. Both `cpc <capsule>` and `cpc u <capsule>` use this rule. The `.cpc.md` suffix is removed case-insensitively; other attachment names lose their last extension. Use `--original-root` to restore the archived folder name instead. Single-file capsules keep their actual filename and extension.
 
-For a capsule containing `Project/`, these commands replace `C:\Work\Project` completely, removing obsolete files from the replacement:
+With one top-level file/folder, `-o` is its containing directory; missing explicit parent entries are created. Without `-o`, output goes beside the capsule. With multiple top-level items and no valid logical root, `-o` is required and names the exact destination containing all archived paths. Archive validation uses the stored paths before choosing the output folder. Reserved top-level `.cpc` records stay inside the input capsule; use `recover` if a separate evidence report is wanted.
+
+For `updated.cpc.md` containing a project folder, these commands replace `C:\Work\updated` completely, removing obsolete files from the replacement:
 
 ```powershell
 cpc u updated.cpc.md -o C:\Work -f
 cpc u updated.cpc.md -o C:\Work -b
 ```
 
+To replace the archived `Project/` instead, add `--original-root`. `cpc c <capsule> <folder>` compares project-relative contents, so an outer folder rename does not report every file as changed. Repacking records the current folder name in the new capsule.
+
 Choose one: `-f` replaces; `-b` saves the old tree as `.bak`, `.bak1`, etc. Without either flag an existing destination is protected. Extraction is staged before replacement, and publication failure attempts to restore the previous tree. For multi-root archives the same flags affect the entire explicit `-o` directory. Hash mismatches, unsafe/ambiguous paths, unsupported types and resource violations remain errors, never metadata warnings.
 
 On Windows, a scanner or another open handle can temporarily block the final directory rename. CPC retries Windows errors 5, 32 and 33 with at most 3.15 seconds of waiting per rename, including saving or restoring an existing destination. A persistent failure exits with `PUBLISH_FAILED` and prints the exact path of the completed extracted project, which is retained under `.cpc-stage-*` so you can open or copy it. If rollback also fails, CPC retains the previous project and prints its location too. These retained folders need manual cleanup after you recover the files. CPC does not disable security controls or fall back to copying a partial tree over your destination. Access denied alone does not identify the cause; a persistent permission or policy restriction requires another permitted destination or your administrator's help.
 
-Optional `--state` writes the adjacent `.Project.cpc-state` for policy and Windows executable-intent continuity. When replacing a workspace with an older adjacent state file, use `--state` to refresh it, or move that old file aside; a clean restore refuses to silently leave stale state attached to a new tree.
+Optional `--state` writes an adjacent state file matching the output folder (for example `.updated.cpc-state`) for policy and Windows executable-intent continuity. When replacing a workspace with an older adjacent state file, use `--state` to refresh it, or move that old file aside; a clean restore refuses to silently leave stale state attached to a new tree.
 
 ### Recovering an improvised CPC from an LLM
 
@@ -276,8 +280,8 @@ For a reproducible example, `python tools/measure_sizes.py` measures CPC's Pytho
 
 | Input | File bytes before packing | Final `.cpc.md` bytes | Output / input |
 |---|---:|---:|---:|
-| CPC Python source and tests | 179,485 | 50,409 | 28.1% |
-| Same source plus compressed asset | 1,228,499 | 1,450,797 | 118.1% |
+| CPC Python source and tests | 185,978 | 51,857 | 27.9% |
+| Same source plus compressed asset | 1,234,992 | 1,452,253 | 117.6% |
 
 Measured on Python 3.13 with this source revision. Sizes vary with source contents, source modification times and the LZMA runtime. The fixture retains source file dates and derives synthetic directory dates from their contents, so temporary staging time does not affect repeated measurements. Generated fixtures stay in a temporary directory. Check the final capsule size against the receiving interface's upload cap.
 

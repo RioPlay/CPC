@@ -54,7 +54,7 @@ class BasicTests(unittest.TestCase):
         code, _, warning = self.cli('u', self.cap, '-o', self.root/'work', '-q')
         self.assertEqual(code, 0, warning)
         self.assertIn('optional metadata audit failed', warning)
-        tree = self.root/'work/Project'
+        tree = self.root/'work/return'
         self.assertEqual(list((self.root/'work').iterdir()), [tree])
         self.assertTrue((tree/'empty').is_dir())
         (tree/'src/main.py').unlink()
@@ -65,9 +65,9 @@ class BasicTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(self.cli('v', returned, '--strict')[0], 0)
         self.assertEqual(self.cli('u', returned, '-o', self.root/'next')[0], 0)
-        self.assertEqual((self.root/'next/Project/new/result.txt').read_bytes(), b'finished')
-        self.assertFalse((self.root/'next/Project/src/main.py').exists())
-        self.assertFalse((self.root/'next/.Project.cpc-state').exists())
+        self.assertEqual((self.root/'next/updated/new/result.txt').read_bytes(), b'finished')
+        self.assertFalse((self.root/'next/updated/src/main.py').exists())
+        self.assertFalse((self.root/'next/.updated.cpc-state').exists())
 
     def test_strict_is_optional_and_reported(self):
         self.archive([('P/a', b'a')])
@@ -78,6 +78,84 @@ class BasicTests(unittest.TestCase):
         self.assertEqual(self.cli('u', self.cap, '-o', self.root/'strict', '--strict')[0], 2)
         self.assertFalse((self.root/'strict').exists())
         self.assertEqual(self.cli(self.cap, '-o', self.root/'auto')[0], 0)
+
+    def test_versioned_capsules_restore_beside_original_and_roundtrip(self):
+        project = self.root/'Project'
+        project.mkdir()
+        (project/'run.sh').write_bytes(b'#!/bin/sh\necho original\n')
+        (project/'empty').mkdir()
+        v2, v3 = self.root/'Project-v2.cpc.md', self.root/'Project-v3.cpc.md'
+        cpc.pack(str(project), str(v2), file_exec={'run.sh': True})
+        original_capsule = v2.read_bytes()
+        v3.write_bytes(original_capsule)
+        self.assertEqual(self.cli(v2)[0], 0)
+        code, out, err = self.cli('u', v3, '--strict', '--state')
+        self.assertEqual(code, 0, err)
+        tree = self.root/'Project-v3'
+        self.assertIn(str(tree), out)
+        self.assertTrue((self.root/'Project-v2/empty').is_dir())
+        self.assertTrue((tree/'empty').is_dir())
+        self.assertFalse((tree/'Project').exists())
+        self.assertEqual((tree/'run.sh').read_bytes(), (project/'run.sh').read_bytes())
+        self.assertEqual(tree.stat().st_mtime_ns, project.stat().st_mtime_ns)
+        state = cpc.read_sidecar_for(str(tree))[1]
+        self.assertEqual(state['root'], 'Project-v3')
+        self.assertIs(cpc.recorded_executable_intent(state)['run.sh'], True)
+        self.assertEqual(self.cli('c', v3, tree)[0], 0)
+        (tree/'run.sh').write_bytes(b'#!/bin/sh\necho edited\n')
+        self.assertEqual(self.cli('c', v3, tree)[0], 1)
+        returned = self.root/'Project-v4.cpc.md'
+        self.assertEqual(self.cli('r', tree, '-o', returned)[0], 0)
+        self.assertEqual(self.cli('v', returned, '--strict')[0], 0)
+        self.assertEqual(self.cli(returned, '--state')[0], 0)
+        self.assertEqual((self.root/'Project-v4/run.sh').read_bytes(), (tree/'run.sh').read_bytes())
+        self.assertTrue((self.root/'Project-v4/empty').is_dir())
+        self.assertEqual(v2.read_bytes(), original_capsule)
+        self.assertEqual(v3.read_bytes(), original_capsule)
+        self.assertEqual((project/'run.sh').read_bytes(), b'#!/bin/sh\necho original\n')
+
+    def test_original_root_option_and_explicit_parent(self):
+        self.archive([('Archived/src/a', b'a')])
+        self.assertEqual(self.cli('u', self.cap, '-o', self.root/'default')[0], 0)
+        self.assertEqual((self.root/'default/return/src/a').read_bytes(), b'a')
+        for verb in (('u', self.cap), (self.cap,)):
+            parent = self.root/('explicit' if len(verb) == 2 else 'auto')
+            code, _, err = self.cli(*verb, '-o', parent, '--original-root')
+            self.assertEqual(code, 0, err)
+            self.assertEqual((parent/'Archived/src/a').read_bytes(), b'a')
+            code, _, err = self.cli(*verb, '-o', parent, '--original-root')
+            self.assertEqual(code, 2)
+            self.assertIn('DEST_EXISTS', err)
+            self.assertIn('-b (backup)', err)
+            self.assertEqual((parent/'Archived/src/a').read_bytes(), b'a')
+
+    def test_capsule_folder_suffixes_and_unsafe_names(self):
+        for name, expected in (('Project-v2.cpc.md', 'Project-v2'),
+                               ('Project.v2.CPC.MD', 'Project.v2'),
+                               ('Project (1).cpc.md', 'Project (1)'),
+                               ('renamed.md', 'renamed')):
+            self.assertEqual(cpc.capsule_folder_name(name), expected)
+        for name in ('.cpc.md', 'CON.cpc.md', '.cpc.cpc.md', 'bad\x01.cpc.md'):
+            with self.assertRaisesRegex(cpc.CPCError, 'CAPSULE_NAME'):
+                cpc.capsule_folder_name(name)
+        self.archive([('P/a', b'a')])
+        invalid = self.root/'.cpc.md'
+        invalid.write_bytes(self.cap.read_bytes())
+        self.assertEqual(self.cli(invalid)[0], 2)
+        self.assertEqual(self.cli(invalid, '--original-root')[0], 0)
+        self.assertEqual((self.root/'P/a').read_bytes(), b'a')
+
+    def test_extensionless_capsule_cannot_be_replaced_by_its_output(self):
+        self.archive([('P/a', b'a')])
+        bare = self.root/'capsule'
+        bare.write_bytes(self.cap.read_bytes())
+        for flag in ('-f', '-b'):
+            code, _, err = self.cli(bare, flag)
+            self.assertEqual(code, 2)
+            self.assertIn('OUTPUT_IS_CAPSULE', err)
+            self.assertEqual(bare.read_bytes(), self.cap.read_bytes())
+        self.assertEqual(self.cli(bare, '-o', self.root/'elsewhere')[0], 0)
+        self.assertEqual((self.root/'elsewhere/capsule/a').read_bytes(), b'a')
 
     def test_bad_metadata_never_controls_destination_or_file_selection(self):
         for index, metadata in enumerate([
@@ -92,7 +170,7 @@ class BasicTests(unittest.TestCase):
                 dest = self.root/str(index)
                 code, _, err = self.cli('u', self.cap, '-o', dest)
                 self.assertEqual(code, 0, err)
-                self.assertEqual((dest/'P/a').read_bytes(), b'a')
+                self.assertEqual((dest/'return/a').read_bytes(), b'a')
                 self.assertFalse((dest/'.cpc').exists())
                 self.assertEqual(len(list(dest.iterdir())), 1)
 
@@ -112,15 +190,15 @@ class BasicTests(unittest.TestCase):
     def test_replace_and_numbered_backups_match_returned_tree(self):
         self.archive([('P/a', b'new')])
         dest = self.root/'work'
-        tree = dest/'P'
+        tree = dest/'return'
         tree.mkdir(parents=True)
         (tree/'obsolete').write_bytes(b'old')
         self.assertEqual(self.cli('u', self.cap, '-o', dest)[0], 2)
         self.assertTrue((tree/'obsolete').exists())
         self.assertEqual(self.cli('u', self.cap, '-o', dest, '-b')[0], 0)
-        self.assertEqual((dest/'P.bak/obsolete').read_bytes(), b'old')
+        self.assertEqual((dest/'return.bak/obsolete').read_bytes(), b'old')
         self.assertEqual(self.cli('u', self.cap, '-o', dest, '-b')[0], 0)
-        self.assertTrue((dest/'P.bak1/a').exists())
+        self.assertTrue((dest/'return.bak1/a').exists())
         (tree/'extra').write_bytes(b'extra')
         self.assertEqual(self.cli('u', self.cap, '-o', dest, '-f')[0], 0)
         self.assertEqual([p.name for p in tree.iterdir()], ['a'])
@@ -128,7 +206,7 @@ class BasicTests(unittest.TestCase):
     def test_failed_staging_and_corruption_do_not_touch_old_tree(self):
         self.archive([('P/a', b'new')])
         dest = self.root/'work'
-        tree = dest/'P'
+        tree = dest/'return'
         tree.mkdir(parents=True)
         (tree/'keep').write_bytes(b'old')
         with patch.object(cpc, 'extract_members', side_effect=OSError('disk full')):
@@ -146,18 +224,18 @@ class BasicTests(unittest.TestCase):
         self.archive([('P/a', b'a')])
         dest = self.root/'work'
         self.assertEqual(self.cli('u', self.cap, '-o', dest, '--state')[0], 0)
-        self.assertTrue((dest/'.P.cpc-state').is_file())
-        before = (dest/'.P.cpc-state').read_bytes()
+        self.assertTrue((dest/'.return.cpc-state').is_file())
+        before = (dest/'.return.cpc-state').read_bytes()
         code, _, err = self.cli('u', self.cap, '-o', dest, '-f')
         self.assertEqual(code, 2)
         self.assertIn('STATE_EXISTS', err)
-        self.assertEqual((dest/'.P.cpc-state').read_bytes(), before)
+        self.assertEqual((dest/'.return.cpc-state').read_bytes(), before)
         self.assertEqual(self.cli('u', self.cap, '-o', dest, '-f', '--state')[0], 0)
 
     def test_publication_failure_rolls_back_whole_tree(self):
         self.archive([('P/a', b'new')])
         dest = self.root/'work'
-        tree = dest/'P'
+        tree = dest/'return'
         tree.mkdir(parents=True)
         (tree/'keep').write_bytes(b'old')
         original = cpc.os.replace
@@ -168,7 +246,7 @@ class BasicTests(unittest.TestCase):
         with patch.object(cpc.os, 'replace', side_effect=fail_stage):
             self.assertEqual(self.cli('u', self.cap, '-o', dest, '-b')[0], 2)
         self.assertEqual((tree/'keep').read_bytes(), b'old')
-        self.assertFalse((dest/'P.bak').exists())
+        self.assertFalse((dest/'return.bak').exists())
         retained, = dest.glob('.cpc-stage-*')
         self.assertEqual((retained/'P/a').read_bytes(), b'new')
 
@@ -220,14 +298,14 @@ class BasicTests(unittest.TestCase):
                 if layout == 'recovery':
                     self.assertTrue((retained/'recovery.json').is_file())
                     self.assertTrue((retained/'.files.cpc-state').is_file())
-                self.assertFalse((dest/'P').exists() if layout == 'root' else dest.exists())
+                self.assertFalse((dest/'return').exists() if layout == 'root' else dest.exists())
 
     def test_failed_rollback_retains_both_projects(self):
         self.archive([('P/a', b'new')])
         for flag in ('-f', '-b'):
             with self.subTest(flag=flag):
                 dest = self.root/flag[1:]
-                tree = dest/'P'
+                tree = dest/'return'
                 tree.mkdir(parents=True)
                 (tree/'keep').write_bytes(b'old')
                 original = cpc.os.replace
@@ -247,7 +325,7 @@ class BasicTests(unittest.TestCase):
 
     def test_locked_old_destination_is_untouched_and_new_tree_retained(self):
         self.archive([('P/a', b'new')])
-        tree = self.root/'P'
+        tree = self.root/'return'
         tree.mkdir()
         (tree/'keep').write_bytes(b'old')
         with patch.object(cpc.os, 'replace', side_effect=PermissionError('old tree locked')):
@@ -302,9 +380,9 @@ class BasicTests(unittest.TestCase):
                 if persistent:
                     retained = Path(err.split('Extracted project retained at: ', 1)[1].splitlines()[0])
                     self.assertEqual((retained/'a').read_bytes(), b'new')
-                    self.assertFalse((dest/'P').exists())
+                    self.assertFalse((dest/'return').exists())
                 else:
-                    self.assertEqual((dest/'P/a').read_bytes(), b'new')
+                    self.assertEqual((dest/'return/a').read_bytes(), b'new')
                     self.assertFalse(list(dest.glob('.cpc-stage-*')))
 
     def test_multiple_roots_optional_state_and_single_file(self):
@@ -322,7 +400,7 @@ class BasicTests(unittest.TestCase):
 
     def test_options_are_not_silently_ignored(self):
         for command in ('p', 'r', 'export', 'recover', 'join', 'i', 'l', 'c', 'x', 'n'):
-            for option in ('--state', '--strict'):
+            for option in ('--state', '--strict', '--original-root'):
                 code, _, err = self.cli(command, option)
                 self.assertEqual(code, 2)
                 self.assertIn('OPTION', err)
@@ -342,7 +420,7 @@ class BasicTests(unittest.TestCase):
             cpc.join_parts([self.root/'parts'], self.root/'joined.cpc.md')
         self.assertTrue(result['split'])
         self.assertEqual(self.cli('u', self.root/'joined.cpc.md', '-o', self.root/'joined-out')[0], 0)
-        self.assertEqual((self.root/'joined-out/P/data.bin').stat().st_size, 130000)
+        self.assertEqual((self.root/'joined-out/joined/data.bin').stat().st_size, 130000)
 
     def test_unsafe_paths_still_fail_before_replacement(self):
         for path in ('../escape', '/absolute', 'P/../escape'):

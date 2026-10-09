@@ -101,7 +101,7 @@ def main():
         out2 = td / "out2"
         out2.mkdir()
         run("u", cap3, "-o", out2)
-        assert (out2 / "Project" / "README.md").read_text(encoding="utf-8") == "# Changed\n"
+        assert (out2 / "Changed" / "README.md").read_text(encoding="utf-8") == "# Changed\n"
 
         # A ZIP is auto-packed intact, not expanded or rewritten.
         one = td / "archive.zip"
