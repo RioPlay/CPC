@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import lzma
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -168,7 +169,143 @@ class BasicTests(unittest.TestCase):
             self.assertEqual(self.cli('u', self.cap, '-o', dest, '-b')[0], 2)
         self.assertEqual((tree/'keep').read_bytes(), b'old')
         self.assertFalse((dest/'P.bak').exists())
-        self.assertFalse(list(dest.glob('.cpc-stage-*')))
+        retained, = dest.glob('.cpc-stage-*')
+        self.assertEqual((retained/'P/a').read_bytes(), b'new')
+
+    def test_windows_rename_retries_only_known_errors_and_is_bounded(self):
+        for winerror in (5, 32, 33, 112, None):
+            with self.subTest(winerror=winerror):
+                error = PermissionError('injected denial')
+                error.winerror = winerror
+                with patch.object(cpc.os, 'replace', side_effect=error) as rename, \
+                     patch.object(cpc.time, 'sleep') as sleep, \
+                     redirect_stderr(io.StringIO()) as err:
+                    with self.assertRaises(PermissionError):
+                        cpc.rename_extraction('source', 'destination')
+                retryable = winerror in (5, 32, 33)
+                self.assertEqual(rename.call_count, 7 if retryable else 1)
+                self.assertAlmostEqual(sum(call.args[0] for call in sleep.call_args_list),
+                                       3.15 if retryable else 0)
+                self.assertEqual(err.getvalue().count('CPC WARN'), int(retryable))
+                if retryable:
+                    with patch.object(cpc.os, 'replace', side_effect=[error, None]) as rename, \
+                         patch.object(cpc.time, 'sleep'), redirect_stderr(io.StringIO()):
+                        cpc.rename_extraction('source', 'destination')
+                    self.assertEqual(rename.call_count, 2)
+
+    def test_failed_publication_retains_each_extraction_layout(self):
+        for layout in ('root', 'flat', 'selected', 'recovery'):
+            with self.subTest(layout=layout):
+                dest = self.root/layout
+                self.archive([('a', b'new'), ('b', b'b')] if layout == 'flat'
+                             else [('P/a', b'new')])
+                args = ('recover', self.cap, '-o', dest) if layout == 'recovery' else (
+                    ('x', self.cap, 'P/a', '-o', dest) if layout == 'selected'
+                    else ('u', self.cap, '-o', dest, '-q'))
+                original = cpc.os.replace
+                def fail_publish(source, target):
+                    # Allow recovery's staged state/report writes.
+                    if Path(source).is_dir():
+                        raise PermissionError('persistent publication denial')
+                    return original(source, target)
+                with patch.object(cpc.os, 'replace', side_effect=fail_publish):
+                    code, _, err = self.cli(*args)
+                self.assertEqual(code, 2)
+                self.assertIn('PUBLISH_FAILED', err)
+                retained = Path(err.split('Extracted project retained at: ', 1)[1].splitlines()[0])
+                self.assertTrue(retained.is_dir())
+                content = retained / ('files/P/a' if layout == 'recovery' else
+                                      'P/a' if layout == 'selected' else 'a')
+                self.assertEqual(content.read_bytes(), b'new')
+                if layout == 'recovery':
+                    self.assertTrue((retained/'recovery.json').is_file())
+                    self.assertTrue((retained/'.files.cpc-state').is_file())
+                self.assertFalse((dest/'P').exists() if layout == 'root' else dest.exists())
+
+    def test_failed_rollback_retains_both_projects(self):
+        self.archive([('P/a', b'new')])
+        for flag in ('-f', '-b'):
+            with self.subTest(flag=flag):
+                dest = self.root/flag[1:]
+                tree = dest/'P'
+                tree.mkdir(parents=True)
+                (tree/'keep').write_bytes(b'old')
+                original = cpc.os.replace
+                def block_destination(source, target):
+                    if Path(target) == tree:
+                        raise PermissionError('publication and rollback denied')
+                    return original(source, target)
+                with patch.object(cpc.os, 'replace', side_effect=block_destination):
+                    code, _, err = self.cli('u', self.cap, '-o', dest, flag)
+                self.assertEqual(code, 2)
+                self.assertIn('Rollback also failed', err)
+                new = Path(err.split('Extracted project retained at: ', 1)[1].splitlines()[0])
+                old = Path(err.split('Previous project retained at: ', 1)[1].splitlines()[0])
+                self.assertEqual((new/'a').read_bytes(), b'new')
+                self.assertEqual((old/'keep').read_bytes(), b'old')
+                self.assertFalse(tree.exists())
+
+    def test_locked_old_destination_is_untouched_and_new_tree_retained(self):
+        self.archive([('P/a', b'new')])
+        tree = self.root/'P'
+        tree.mkdir()
+        (tree/'keep').write_bytes(b'old')
+        with patch.object(cpc.os, 'replace', side_effect=PermissionError('old tree locked')):
+            code, _, err = self.cli('u', self.cap, '-o', self.root, '-f')
+        self.assertEqual(code, 2)
+        self.assertIn('saving the previous destination', err)
+        self.assertEqual((tree/'keep').read_bytes(), b'old')
+        retained, = self.root.glob('.cpc-stage-*')
+        self.assertEqual((retained/'P/a').read_bytes(), b'new')
+        self.assertFalse(list(self.root.glob('.cpc-old-*')))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows directory-handle sharing semantics')
+    def test_real_windows_directory_lock_recovers_after_release(self):
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.HANDLE)
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel.CloseHandle.restype = wintypes.BOOL
+        self.archive([('P/a', b'new')])
+        extract = cpc.extract_members
+        handles = []
+        def release(_delay=None):
+            while handles:
+                self.assertTrue(kernel.CloseHandle(handles.pop()))
+        self.addCleanup(release)
+        def extract_and_lock(*args, **kwargs):
+            extract(*args, **kwargs)
+            staged = Path(args[2])/'P'
+            # FILE_SHARE_READ | FILE_SHARE_WRITE, deliberately no SHARE_DELETE.
+            locked = staged/'a' if lock_child else staged
+            handle = kernel.CreateFileW(str(locked), 0x80000000, 3, None, 3, 0x02000000, None)
+            if handle == wintypes.HANDLE(-1).value:
+                raise ctypes.WinError(ctypes.get_last_error())
+            handles.append(handle)
+            with self.assertRaises(OSError) as blocked:
+                os.replace(staged, self.root/'probe')
+            self.assertIn(blocked.exception.winerror, (5, 32, 33))
+        for lock_child, persistent in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(lock_child=lock_child, persistent=persistent):
+                dest = self.root/f'child-{lock_child}-persistent-{persistent}'
+                with patch.object(cpc, 'extract_members', side_effect=extract_and_lock), \
+                     patch.object(cpc.time, 'sleep', side_effect=None if persistent else release) as sleep:
+                    code, _, err = self.cli('u', self.cap, '-o', dest)
+                release()
+                self.assertIn('retrying', err)
+                self.assertEqual(sleep.call_count, 6 if persistent else 1)
+                self.assertEqual(code, 2 if persistent else 0, err)
+                if persistent:
+                    retained = Path(err.split('Extracted project retained at: ', 1)[1].splitlines()[0])
+                    self.assertEqual((retained/'a').read_bytes(), b'new')
+                    self.assertFalse((dest/'P').exists())
+                else:
+                    self.assertEqual((dest/'P/a').read_bytes(), b'new')
+                    self.assertFalse(list(dest.glob('.cpc-stage-*')))
 
     def test_multiple_roots_optional_state_and_single_file(self):
         self.archive([('a/x', b'x'), ('b/y', b'y')])

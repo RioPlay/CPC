@@ -134,6 +134,8 @@ cpc u updated.cpc.md -o C:\Work -b
 
 Choose one: `-f` replaces; `-b` saves the old tree as `.bak`, `.bak1`, etc. Without either flag an existing destination is protected. Extraction is staged before replacement, and publication failure attempts to restore the previous tree. For multi-root archives the same flags affect the entire explicit `-o` directory. Hash mismatches, unsafe/ambiguous paths, unsupported types and resource violations remain errors, never metadata warnings.
 
+On Windows, a scanner or another open handle can temporarily block the final directory rename. CPC retries Windows errors 5, 32 and 33 with at most 3.15 seconds of waiting per rename, including saving or restoring an existing destination. A persistent failure exits with `PUBLISH_FAILED` and prints the exact path of the completed extracted project, which is retained under `.cpc-stage-*` so you can open or copy it. If rollback also fails, CPC retains the previous project and prints its location too. These retained folders need manual cleanup after you recover the files. CPC does not disable security controls or fall back to copying a partial tree over your destination. Access denied alone does not identify the cause; a persistent permission or policy restriction requires another permitted destination or your administrator's help.
+
 Optional `--state` writes the adjacent `.Project.cpc-state` for policy and Windows executable-intent continuity. When replacing a workspace with an older adjacent state file, use `--state` to refresh it, or move that old file aside; a clean restore refuses to silently leave stale state attached to a new tree.
 
 ### Recovering an improvised CPC from an LLM
@@ -186,7 +188,7 @@ Before returning edited work, use the supplied CLI to repack, verify with `--str
 
 Packing streams TAR data into XZ and stores the compressed intermediate in a temporary file, then writes Base64 in chunks. Recovery decodes to a temporary XZ file, checks its hash, and decompresses to a temporary TAR before validation and staged extraction. The wire format is unchanged; existing capsules remain readable.
 
-Large payloads no longer need to fit in RAM. Compressor/decoder memory and the file/manifest index still consume memory, so this is not a fixed total-memory guarantee. Temporary disk space is required for compressed and expanded data, plus staged extraction. Temporary intermediates are cleaned up on normal completion and handled errors. A terminated process or power loss can leave staging files behind.
+Large payloads no longer need to fit in RAM. Compressor/decoder memory and the file/manifest index still consume memory, so this is not a fixed total-memory guarantee. Temporary disk space is required for compressed and expanded data, plus staged extraction. Temporary intermediates are cleaned up on normal completion and handled errors, except completed extractions retained after publication failure as described above. A terminated process or power loss can leave staging files behind.
 
 The compression default is **XZ preset 6**, using Python's single-threaded incremental encoder. Use `--preset 9` for higher compression effort, or `-m` for preset 9 with extreme effort. Presets can change output size and runtime; file contents and the CPC format are unchanged. `--preset` and `-m` are mutually exclusive.
 
@@ -274,8 +276,8 @@ For a reproducible example, `python tools/measure_sizes.py` measures CPC's Pytho
 
 | Input | File bytes before packing | Final `.cpc.md` bytes | Output / input |
 |---|---:|---:|---:|
-| CPC Python source and tests | 166,480 | 47,213 | 28.4% |
-| Same source plus compressed asset | 1,215,494 | 1,447,581 | 119.1% |
+| CPC Python source and tests | 179,485 | 50,409 | 28.1% |
+| Same source plus compressed asset | 1,228,499 | 1,450,797 | 118.1% |
 
 Measured on Python 3.13 with this source revision. Sizes vary with source contents, source modification times and the LZMA runtime. The fixture retains source file dates and derives synthetic directory dates from their contents, so temporary staging time does not affect repeated measurements. Generated fixtures stay in a temporary directory. Check the final capsule size against the receiving interface's upload cap.
 

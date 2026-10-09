@@ -133,7 +133,7 @@ class StreamingTests(unittest.TestCase):
                 raise OSError("injected rename failure")
             return original(source, target)
         with patch.object(cpc.os, "replace", side_effect=fail_publish):
-            with self.assertRaises(OSError):
+            with self.assertRaisesRegex(cpc.PublicationError, "previous destination was restored"):
                 cpc.publish_extraction(str(staged), str(self.source), True, False)
         self.assertEqual((self.source / "main.py").read_bytes(), b"print('hello')\r\n")
         self.assertFalse(list(self.root.glob(".cpc-old-*")))

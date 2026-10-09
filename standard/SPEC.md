@@ -248,6 +248,9 @@ Archive member paths MUST:
 - resolve entirely beneath the selected extraction root.
 
 Portable profile packers MUST reject path names known to be unsafe across Windows, macOS, and Linux rather than silently rename them.
+Portable profile packers and readers MUST reject control characters U+0001 through
+U+001F in path components, in addition to NUL and the Windows-invalid characters
+`< > : " \\ | ? *`. These checks apply before extraction creates project files.
 
 ### 7.1 Case collisions
 
@@ -265,7 +268,7 @@ and fail rather than choose one.
 Portable CPC MUST reject path components equivalent to reserved device names including:
 
 ```text
-CON PRN AUX NUL COM1..COM9 LPT1..LPT9
+CON PRN AUX NUL COM1..COM9 LPT1..LPT9 COM¹ COM² COM³ LPT¹ LPT² LPT³
 ```
 
 including forms that remain reserved when followed by an extension.

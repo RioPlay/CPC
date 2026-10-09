@@ -139,6 +139,29 @@ class ReceiverTests(unittest.TestCase):
             data = b""
         return header.tobuf() + data + b"\0" * (-size % 512)
 
+    def test_windows_nonportable_names_rejected_during_archive_validation(self):
+        names = [f"demo_project/control{chr(value)}.txt" for value in range(1, 32)]
+        names += [f"demo_project/{prefix}{digit}{suffix}"
+                  for prefix in ("COM", "LPT") for digit in "¹²³"
+                  for suffix in ("", ".txt", "/child.txt")]
+        for name in names:
+            with self.subTest(name=repr(name)):
+                member = tarfile.TarInfo(name)
+                with self.assertRaisesRegex(cpc.CPCError, "NONPORTABLE_NAME"):
+                    cpc.validate_archive(self.altered_tar(extra=[member]))
+        for name in ("demo_project/control\x01.txt", "demo_project/COM¹", "demo_project/LPT³.txt"):
+            self.carrier(lzma.compress(self.altered_tar(extra=[tarfile.TarInfo(name)])))
+            with patch.object(cpc, "extract_members") as extract:
+                for strict in (False, True):
+                    with self.assertRaisesRegex(cpc.CPCError, "NONPORTABLE_NAME"):
+                        cpc.unpack(str(self.path), str(Path(self.tmp.name)/"out"), strict=strict)
+                with self.assertRaisesRegex(cpc.CPCError, "NONPORTABLE_NAME"):
+                    cpc.recover(str(self.path), str(Path(self.tmp.name)/"recovery"))
+                extract.assert_not_called()
+        # Ordinary Unicode and device-name prefixes are valid filenames.
+        for name in ("demo_project/café.txt", "demo_project/COM¹-report.txt", "demo_project/LPT³notes"):
+            cpc.portable_name_check(name)
+
     def assert_rejected_before_extraction(self, raw, error):
         self.carrier(lzma.compress(raw, preset=0))
         with patch.object(cpc, "unpack_verified") as extract:

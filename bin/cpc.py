@@ -46,6 +46,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import time
 
 VERSION = "1"  # CPC wire-format version
 RELEASE_VERSION = "0.3.0-rc.6"
@@ -84,10 +85,29 @@ WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
+    *(f"{prefix}{digit}" for prefix in ("COM", "LPT") for digit in "¹²³"),
 }
 
 class CPCError(Exception):
     pass
+
+
+class PublicationError(CPCError):
+    """Completed extraction must be retained when its final rename fails."""
+
+
+@contextmanager
+def extraction_stage(parent):
+    stage = tempfile.mkdtemp(prefix=".cpc-stage-", dir=parent)
+    retain = False
+    try:
+        yield stage
+    except PublicationError:
+        retain = True
+        raise
+    finally:
+        if not retain:
+            shutil.rmtree(stage, ignore_errors=True)
 
 
 class CPCMetadataError(CPCError):
@@ -150,8 +170,8 @@ def portable_name_check(rel):
         stem = p.rstrip(" .").split(".")[0].upper()
         if p.endswith(" ") or p.endswith(".") or stem in WINDOWS_RESERVED:
             raise CPCError(f"NONPORTABLE_NAME: {rel}")
-        if any(c in p for c in '<>:"|?*'):
-            raise CPCError(f"NONPORTABLE_NAME: {rel}")
+        if any(ord(c) < 32 or c in '<>:"|?*' for c in p):
+            raise CPCError(f"NONPORTABLE_NAME: {rel!r}")
 
 
 def load_cpcignore(source):
@@ -1129,7 +1149,7 @@ def recover(capsule, output, mtime=None):
         }
         parent = os.path.dirname(output)
         os.makedirs(parent, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".cpc-stage-", dir=parent) as temp:
+        with extraction_stage(parent) as temp:
             stage = Path(temp)/"recovery"
             files = stage/"files"
             files.mkdir(parents=True)
@@ -1181,8 +1201,7 @@ def unpack_verified(capsule, info, output, force, backup, selected, keep_state=F
 
     parent = os.path.dirname(final_root) or "."
     os.makedirs(parent, exist_ok=True)
-    stage = tempfile.mkdtemp(prefix=".cpc-stage-", dir=parent)
-    try:
+    with extraction_stage(parent) as stage:
         members = []
         for m in info["members"]:
             name = m.name.rstrip("/") if m.isdir() else m.name
@@ -1205,27 +1224,56 @@ def unpack_verified(capsule, info, output, force, backup, selected, keep_state=F
         else:
             # publish stage contents as requested output directory
             publish_extraction(stage, final_root, force, backup)
-            stage = None
             sidecar = None
             if selected is None and keep_state:
                 logical = os.path.basename(final_root)
                 fresh = dict(info, state=dict(state, root=logical), manifest={
                     logical + '/' + name: record for name, record in info['manifest'].items()})
                 sidecar = write_state_sidecar(final_root, capsule, fresh)
-    finally:
-        if stage and os.path.exists(stage):
-            shutil.rmtree(stage, ignore_errors=True)
 
     return final_root, sidecar, {k: v for k, v in info.items() if k != "raw"}
 
+def rename_extraction(source, destination):
+    """Allow short-lived Windows locks to clear; never retry indefinitely."""
+    delays = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
+    for attempt in range(len(delays) + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as error:
+            if getattr(error, "winerror", None) not in (5, 32, 33) or attempt == len(delays):
+                raise
+            if attempt == 0:
+                print(f"CPC WARN Windows blocked rename to {destination!r}; "
+                      "retrying for up to 3.15 seconds.", file=sys.stderr)
+            time.sleep(delays[attempt])
+
+
+def publication_error(staged, destination, phase, error, previous):
+    return PublicationError(
+        f"PUBLISH_FAILED: extraction completed, but {phase} failed: {error}\n"
+        f"Requested destination: {destination}\n"
+        f"Extracted project retained at: {staged}\n"
+        f"{previous}\n"
+        "You can open or copy the retained project, or retry the capsule with -o "
+        "in another writable location. No partial copy was published.")
+
+
 def publish_extraction(staged, destination, force, backup):
     if not os.path.lexists(destination):
-        os.replace(staged, destination)
+        try:
+            rename_extraction(staged, destination)
+        except OSError as error:
+            raise publication_error(staged, destination, "final rename", error,
+                                    "There was no previous destination to replace.") from error
         return
     if not (force or backup):
         raise CPCError(f"DEST_EXISTS: {destination}")
     # Keep the old destination available until staging has fully succeeded.
-    with tempfile.TemporaryDirectory(prefix=".cpc-old-", dir=os.path.dirname(destination)) as old:
+    old = None
+    retain_old = False
+    try:
+        old = tempfile.mkdtemp(prefix=".cpc-old-", dir=os.path.dirname(destination))
         saved = os.path.join(old, "previous")
         if backup:
             saved = destination + ".bak"
@@ -1233,12 +1281,39 @@ def publish_extraction(staged, destination, force, backup):
             while os.path.lexists(saved):
                 saved = destination + f".bak{n}"
                 n += 1
-        os.replace(destination, saved)
         try:
-            os.replace(staged, destination)
-        except BaseException:
-            os.replace(saved, destination)
+            rename_extraction(destination, saved)
+        except OSError as error:
+            raise publication_error(staged, destination, "saving the previous destination", error,
+                                    "The previous destination has not been replaced.") from error
+        try:
+            rename_extraction(staged, destination)
+        except BaseException as error:
+            # Never let temporary-directory cleanup delete the previous tree
+            # if Windows also blocks the rollback rename (including Ctrl-C).
+            retain_old = True
+            try:
+                rename_extraction(saved, destination)
+            except BaseException as rollback_error:
+                raise publication_error(staged, destination, "final rename", error,
+                                        f"Rollback also failed: {rollback_error}\n"
+                                        f"Previous project retained at: {saved}") from error
+            retain_old = False
+            if isinstance(error, OSError):
+                raise publication_error(staged, destination, "final rename", error,
+                                        "The previous destination was restored.") from error
             raise
+    except PublicationError:
+        raise
+    except OSError as error:
+        raise publication_error(staged, destination, "preparing replacement", error,
+                                "The previous destination has not been replaced.") from error
+    finally:
+        if old and not retain_old:
+            shutil.rmtree(old, ignore_errors=True)
+            if os.path.exists(old):
+                print(f"CPC WARN Could not remove replacement scratch directory: {old}",
+                      file=sys.stderr)
 
 
 def sidecar_path(path):
@@ -1898,6 +1973,7 @@ def main(argv=None):
             newroot = args[2]
             portable_name_check(newroot)
             temp = tempfile.mkdtemp(prefix="cpc-rename-")
+            retain_temp = False
             try:
                 oldroot, _, info = unpack(cap, output=temp, mtime=ns.mtime, strict=True, keep_state=True)
                 _, saved = read_sidecar_for(oldroot)
@@ -1914,8 +1990,12 @@ def main(argv=None):
                 )
                 print(f"CPC PASS -> {result['output']}")
                 return 0
+            except PublicationError:
+                retain_temp = True
+                raise
             finally:
-                shutil.rmtree(temp, ignore_errors=True)
+                if not retain_temp:
+                    shutil.rmtree(temp, ignore_errors=True)
 
         raise CPCError("UNKNOWN_COMMAND")
 
