@@ -6,7 +6,7 @@ A CPC capsule may be malformed, hostile, truncated, extremely compressible, or d
 
 ## Mandatory defenses
 
-1. Verify outer SHA-256 before decompression.
+1. Compute the outer SHA-256 and report whether it matches a supplied hash. Strict readers MUST require a matching canonical header before decompression; basic restoration warns about absent/mismatched hashes and MUST NOT claim verified sender integrity.
 2. Enforce compressed and decompressed resource limits.
 3. Inspect every TAR member before extraction.
 4. Reject traversal/absolute/drive/UNC paths.

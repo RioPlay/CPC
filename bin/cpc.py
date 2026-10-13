@@ -2,7 +2,7 @@
 # Copyright 2026 RioPlay
 # SPDX-License-Identifier: MIT
 """
-CPC reference implementation 0.3.0-rc.6
+CPC reference implementation 0.3.0-rc.7
 
 Primary workflow:
     cpc.py                  # pack current directory
@@ -49,7 +49,7 @@ import tempfile
 import time
 
 VERSION = "1"  # CPC wire-format version
-RELEASE_VERSION = "0.3.0-rc.6"
+RELEASE_VERSION = "0.3.0-rc.7"
 CODEC = "xz"
 START = "<CPC>"
 END = "</CPC>"
@@ -522,8 +522,8 @@ def default_output_for_pack(source):
     clean = source.rstrip(os.sep)
     return clean + ".cpc.md"
 
-def decode_carrier(source, packed):
-    """Parse the envelope and Base64 in bounded reads, including unwrapped lines."""
+def decode_carrier(source, packed, strict_header=False):
+    """Decode one marker-delimited payload; descriptive headers are advisory."""
     carrier_size = 0
     digest = hashlib.sha256()
     packed_size = 0
@@ -553,19 +553,10 @@ def decode_carrier(source, packed):
             digest.update(decoded)
             packed.write(decoded)
 
-    header = source.readline(256)
-    carrier_size += len(header)
-    try:
-        meta = header.decode("ascii").strip().split("|")
-    except UnicodeDecodeError:
-        raise CPCError("NOT_CPC")
-    if len(meta) != 4 or meta[:3] != ["#CPC", VERSION, "b64>xz>tar"]:
-        raise CPCError("INVALID_METADATA")
-    cap_hash = meta[3]
-    if len(cap_hash) != 64 or any(c not in "0123456789abcdef" for c in cap_hash):
-        raise CPCError("INVALID_HASH")
     phase = "start"
     pending = b""
+    prefix = bytearray()
+    trailer_size = 0
     while True:
         chunk = source.read(IO_CHUNK)
         carrier_size += len(chunk)
@@ -575,12 +566,20 @@ def decode_carrier(source, packed):
             break
         pending += chunk
         if phase == "start":
-            pending = pending.lstrip(whitespace)
-            if len(pending) < len(START):
+            marker = pending.find(START.encode("ascii"))
+            if marker == -1:
+                keep = len(START) - 1
+                prefix.extend(pending[:-keep])
+                pending = pending[-keep:]
+                if len(prefix) > MAX_METADATA:
+                    raise CPCError("METADATA_LIMIT: carrier preamble")
                 continue
-            if not pending.startswith(START.encode("ascii")):
+            prefix.extend(pending[:marker])
+            if len(prefix) > MAX_METADATA:
+                raise CPCError("METADATA_LIMIT: carrier preamble")
+            if END.encode("ascii") in prefix:
                 raise CPCError("INVALID_MARKERS")
-            pending = pending[len(START):]
+            pending = pending[marker + len(START):]
             phase = "payload"
         if phase == "payload":
             marker = pending.find(b"<")
@@ -601,15 +600,40 @@ def decode_carrier(source, packed):
             pending = pending[len(END):]
             phase = "done"
         if phase == "done":
-            if pending.strip(whitespace):
-                raise CPCError("INVALID_MARKERS")
-            pending = b""
+            if START.encode("ascii") in pending or END.encode("ascii") in pending:
+                raise CPCError("AMBIGUOUS_PAYLOAD: exactly one CPC block is required")
+            discard = max(0, len(pending) - (len(END) - 1))
+            if trailer_size + len(pending) > MAX_METADATA:
+                raise CPCError("METADATA_LIMIT: carrier epilogue")
+            trailer_size += discard
+            pending = pending[discard:]
     if phase != "done":
         raise CPCError("INVALID_MARKERS")
-    if digest.hexdigest() != cap_hash:
-        raise CPCError("HASH_MISMATCH")
+    cap_hash = digest.hexdigest()
+    text = bytes(prefix).decode("utf-8-sig", errors="replace")
+    canonical = re.findall(r"(?m)^[ \t]*#CPC\|1\|b64>xz>tar\|([0-9a-fA-F]{64})[ \t\r]*$", text)
+    claims = set(h.lower() for h in re.findall(
+        r"(?i)(?<![a-z0-9])([0-9a-f]{64})(?![a-z0-9])", text))
+    claimed_hash = next(iter(claims)) if len(claims) == 1 else None
+    header_valid = len(canonical) == 1 and len(claims) == 1
+    integrity = "verified" if claimed_hash == cap_hash else "mismatch" if claimed_hash else "unverified"
+    warnings = []
+    if not header_valid:
+        warnings.append("missing, malformed or nonstandard header; decoded the CPC block")
+    if integrity == "mismatch":
+        warnings.append("HASH_MISMATCH: supplied hash does not match decoded XZ bytes; sender integrity is unverified")
+    elif integrity == "unverified":
+        warnings.append("no unambiguous usable sender hash; sender integrity is unverified")
+    if strict_header:
+        if not header_valid:
+            raise CPCError("INVALID_METADATA: strict verification requires the canonical v1 header")
+        if integrity != "verified":
+            raise CPCError("HASH_MISMATCH")
     packed.seek(0)
-    return cap_hash, packed_size, carrier_size
+    return cap_hash, packed_size, carrier_size, {
+        "header_valid": header_valid, "claimed_hash": claimed_hash,
+        "integrity": integrity, "header_warning": "; ".join(warnings) or None,
+    }
 
 
 def decompress_to_file(packed, raw):
@@ -636,20 +660,20 @@ def decompress_to_file(packed, raw):
 
 
 @contextmanager
-def parse_capsule(path):
+def parse_capsule(path, strict_header=False):
     if is_part(path):
         raise CPCError("PART_REQUIRES_JOIN: use cpc join before restoring")
     if os.path.getsize(path) > MAX_CARRIER:
         raise CPCError("CARRIER_LIMIT")
     with tempfile.TemporaryFile() as raw:
         with tempfile.TemporaryFile() as packed, open(path, "rb") as source:
-            cap_hash, packed_size, carrier_size = decode_carrier(source, packed)
+            cap_hash, packed_size, carrier_size, header = decode_carrier(source, packed, strict_header)
             raw_size, package_id = decompress_to_file(packed, raw)
         yield {
             "version": VERSION, "codec": CODEC, "capsule_hash": cap_hash,
             "package_id": package_id, "content_id": None, "raw": raw,
             "raw_size": raw_size, "packed_size": packed_size,
-            "carrier_size": carrier_size,
+            "carrier_size": carrier_size, **header,
         }
 
 
@@ -932,15 +956,17 @@ def basic_archive_metadata(raw, members):
 
 
 def warn_metadata(info):
+    if info.get("header_warning"):
+        print("CPC WARNING: " + info["header_warning"], file=sys.stderr)
     if info.get("metadata_warning"):
-        print("CPC WARNING: transport integrity verified; optional metadata audit failed: "
+        print("CPC WARNING: archive safety checked; optional metadata audit failed: "
               + info["metadata_warning"] + ". Using actual archive paths; original completeness is not proven.",
               file=sys.stderr)
 
 
 @contextmanager
 def verified_capsule(path, strict=True):
-    with parse_capsule(path) as info:
+    with parse_capsule(path, strict_header=strict) as info:
         members = scan_archive(info["raw"])
         warning = None
         try:
@@ -969,10 +995,19 @@ def full_verify(path, strict=True):
 def is_capsule(path):
     if not os.path.isfile(path):
         return False
+    if os.fspath(path).lower().endswith(".cpc.md"):
+        return True
     try:
         with open(path, "rb") as fh:
-            head = fh.read(6)
-        return head.startswith(b"#CPC|")
+            head = fh.read(64 * 1024)
+        clean = head.lstrip(b"\xef\xbb\xbf \t\r\n")
+        if clean.startswith((b"#CPC|", b"CPC|")):
+            return True
+        marker = head.find(START.encode("ascii"))
+        if marker != -1:
+            sample = head[marker + len(START):].translate(None, b" \t\r\n\v\f")
+            return sample.startswith(b"/Td6WFo")
+        return False
     except OSError:
         return False
 
@@ -1112,6 +1147,7 @@ def recover(capsule, output, mtime=None):
         # mandatory. Only the subsequent CPC metadata audit is diagnostic.
         members = scan_archive(info["raw"])
         failure = None
+        warn_metadata(info)
         verified_state = None
         try:
             _, verified_state, _ = validate_cpc_metadata(info["raw"], members)
@@ -1132,9 +1168,10 @@ def recover(capsule, output, mtime=None):
         if not payload:
             raise CPCError("NO_RECOVERABLE_FILES")
         report = {
-            "status": "recovered", "original_cpc_valid": failure is None,
+            "status": "recovered", "original_cpc_valid": failure is None and info["header_valid"] and info["integrity"] == "verified",
             "first_validation_failure": failure,
-            "xz_sha256": info["capsule_hash"], "outer_hash_verified": True,
+            "xz_sha256": info["capsule_hash"], "outer_hash_verified": info["integrity"] == "verified",
+            "integrity": info["integrity"], "header_warning": info["header_warning"],
             "files": sum(m.isfile() for m in payload),
             "explicit_directories": sum(m.isdir() for m in payload),
             "metadata_members_retained": len(metadata), "mtime": policy,
@@ -1415,6 +1452,8 @@ def inspect_capsule(path):
         "compressed_bytes": info["packed_size"],
         "tar_bytes": info["raw_size"],
         "capsule_hash": info["capsule_hash"],
+        "claimed_hash": info["claimed_hash"], "integrity": info["integrity"],
+        "header_valid": info["header_valid"], "header_warning": info["header_warning"],
         "package_id": info["package_id"],
         "content_id": info["content_id"],
         "metadata_valid": info["metadata_valid"],
@@ -1655,8 +1694,10 @@ def recovery_handoff(identity, count, size, limit):
         "Keep cpc-recover.py outside the project and use this same CLI to return it.\n"
         "Do not substitute a homemade TAR/Base64 encoder, fabricate a CPC header,\n"
         "or hand-write metadata. The packer generates and verifies fresh metadata.\n"
-        "Basic restore tolerates defective optional metadata with a warning; --strict\n"
-        "requires the complete metadata audit. Neither proves source completeness.\n\n"
+        "Basic restore decodes the block between <CPC> and </CPC>, tolerating\n"
+        "missing/nonstandard headers or mismatched hashes with warnings. Archive\n"
+        "safety checks remain mandatory. --strict requires the canonical header,\n"
+        "matching hash and complete metadata audit. Neither proves source completeness.\n\n"
         "The workspace is ./recovered/PROJECT_ROOT. Repack works without state. If\n"
         "unpack used --state, keep .PROJECT_ROOT.cpc-state beside the project to retain\n"
         "saved policy and Windows executable flags. Otherwise current filesystem\n"
@@ -1822,7 +1863,7 @@ def parser():
     p.add_argument("-q", "--quiet", action="store_true")
     p.add_argument("-V", "--verbose", action="store_true")
     p.add_argument("--strict", action="store_true",
-                   help="unpack/verify: require the full CPC metadata audit")
+                   help="unpack/verify: require canonical header, matching hash and full CPC metadata audit")
     p.add_argument("--state", action="store_true",
                    help="unpack: save optional adjacent state for policy and Windows executable intent")
     p.add_argument("--original-root", action="store_true",
@@ -1919,7 +1960,8 @@ def main(argv=None):
                 out, side, info = unpack(target, ns.output, ns.force, ns.backup, mtime=ns.mtime,
                                          strict=ns.strict, keep_state=ns.state, original_root=ns.original_root)
                 if not ns.quiet:
-                    print(f"CPC PASS files={info['user_members']}")
+                    status = "PASS" if info['integrity'] == 'verified' else "RESTORED integrity=" + info['integrity']
+                    print(f"CPC {status} files={info['user_members']}")
                     print(f"-> {out}")
                 return 0
             result = pack(target, ns.output, ns.force, ns.backup, ns.archive, preset, ns.include, ns.exclude, mtime=ns.mtime or "preserve")
@@ -1946,7 +1988,8 @@ def main(argv=None):
             out, side, info = unpack(args[1], ns.output, ns.force, ns.backup, mtime=ns.mtime,
                                      strict=ns.strict, keep_state=ns.state, original_root=ns.original_root)
             if not ns.quiet:
-                print(f"CPC PASS files={info['user_members']}")
+                status = "PASS" if info['integrity'] == 'verified' else "RESTORED integrity=" + info['integrity']
+                print(f"CPC {status} files={info['user_members']}")
                 print(f"-> {out}")
             return 0
 
@@ -1966,7 +2009,9 @@ def main(argv=None):
                 raise CPCError("USAGE: cpc v <capsule>")
             info = full_verify(args[1], strict=ns.strict)
             if not ns.quiet:
-                print(f"CPC PASS v={info['version']} files={info['user_members']} packed={human_bytes(info['carrier_size'])}")
+                status = "PASS" if info['integrity'] == 'verified' else "RESTORABLE"
+                print(f"CPC {status} v={info['version']} files={info['user_members']} packed={human_bytes(info['carrier_size'])}")
+                print("integrity=" + info['integrity'])
                 print("metadata=" + ("verified" if info['metadata_valid'] else "unverified"))
                 print(f"content={info['content_id']}")
             return 0

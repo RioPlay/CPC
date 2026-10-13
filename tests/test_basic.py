@@ -215,7 +215,7 @@ class BasicTests(unittest.TestCase):
         self.assertFalse(list(dest.glob('.cpc-stage-*')))
         data = self.cap.read_bytes()
         self.cap.write_bytes(data.replace(data.splitlines()[0].split(b'|')[-1], b'0'*64, 1))
-        code, _, err = self.cli('u', self.cap, '-o', dest, '-f')
+        code, _, err = self.cli('u', self.cap, '-o', dest, '-f', '--strict')
         self.assertEqual(code, 2)
         self.assertIn('HASH_MISMATCH', err)
         self.assertEqual((tree/'keep').read_bytes(), b'old')

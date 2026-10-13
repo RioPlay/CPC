@@ -42,6 +42,8 @@ coverage.xml
 htmlcov/
 *.log
 /test-results/
+/.cpc-test-tmp/
+/.codex-remote-attachments/
 /benchmark-results/
 /benchmarks/
 /_install_test/

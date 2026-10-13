@@ -47,15 +47,20 @@ A conforming CPC implementation MUST preserve these principles:
 
 ### Reader profiles
 
-The **basic transport reader** requires the envelope and compressed SHA-256,
-bounded complete XZ decompression, and complete safe TAR structure. Internal
+The **basic transport reader** requires exactly one `<CPC>` / `</CPC>` payload,
+strict Base64, bounded complete XZ decompression, and complete safe TAR structure.
+It accepts missing/nonstandard headers and missing/ambiguous/mismatched header
+hashes with warnings. The actual compressed SHA-256 is always computed;
+sender integrity MUST be reported separately as verified, unverified or mismatch.
+Internal
 `.cpc/state` and `.cpc/manifest` are optional for basic restoration. The reference
 reader attempts the full audit; failure MUST be reported as a metadata warning,
 and unverified state MUST NOT control the extraction layout. Archive paths remain
 authoritative. Missing explicit parent directories may be created; ambiguous,
 unsafe or conflicting paths remain errors.
 
-The **full metadata audit** additionally enforces the internal state, manifest
+The **full metadata audit** additionally requires the canonical v1 header and a
+matching compressed hash before decompression, and enforces the internal state, manifest
 and per-file consistency requirements below. The reference CLI exposes this as
 `u --strict` and `v --strict`. The reference writer continues to generate and
 verify full-profile capsules, preserving compatibility with older readers.
@@ -63,7 +68,7 @@ Those readers require metadata and may reject basic-profile input. This change
 broadens the documented reader profile; it does not change the v1 envelope or
 compression chain. Neither profile proves sender identity or source selection
 completeness. Manifest/layout requirements below apply to the full profile;
-path/type/resource and transport-integrity requirements apply to both.
+path/type/resource and complete-decoding requirements apply to both.
 
 A canonical CPC capsule has this exact structure:
 
@@ -98,16 +103,15 @@ Canonical emitters MUST NOT add code fences around the payload.
 
 ### 3.2 Tolerant parsing
 
-Readers MAY accept CRLF line endings and arbitrary ASCII whitespace inside the Base64 block.
+Readers MAY accept CRLF line endings and arbitrary ASCII whitespace inside the Base64 block. Basic readers also tolerate a UTF-8 BOM and bounded Markdown/text preambles and epilogues. The reference caps each preamble/epilogue at 16 MiB and still counts every byte toward the carrier ceiling. Supplementary text is never executable control data.
 
 Readers MUST reject:
 
 - zero CPC blocks;
 - more than one complete CPC block;
-- unknown CPC format version;
-- an unknown recipe;
-- malformed Base64;
-- payload hash mismatch.
+- malformed Base64, incomplete/extra compressed streams, unsafe archives or resource-limit violations.
+
+Strict readers additionally reject unknown format versions/recipes, invalid headers and payload hash mismatches. Basic readers warn and derive the actual Base64/XZ/TAR contents instead of relying on the descriptive recipe. They do not attempt alternative compression codecs or invent missing payload bytes.
 
 ---
 
@@ -120,7 +124,7 @@ Markdown
   ↓ locate exactly one CPC payload
 Base64 decode
   ↓
-verify SHA256(XZ bytes)
+compute SHA256(XZ bytes); check supplied hash or warn (strict requires match)
   ↓
 XZ/LZMA2 decompress
   ↓
@@ -135,9 +139,9 @@ A reader MUST validate the archive before publishing recovered content.
 
 ### 4.1 Evidence-preserving recovery
 
-An implementation MAY provide a separate recovery operation that additionally preserves original CPC metadata as evidence. Basic restoration already accepts missing/inconsistent metadata with a warning; it MUST NOT claim the full metadata audit passed. Explicit recovery MUST retain outer hash verification, complete bounded decompression, path/type/duplicate checks, and all resource ceilings. Missing implied directory entries MAY be created from validated file paths. Conflicting paths or file/directory types MUST NOT be guessed or merged.
+An implementation MAY provide a separate recovery operation that additionally preserves original CPC metadata as evidence. Basic restoration already accepts missing/inconsistent metadata with a warning; it MUST NOT claim the full metadata audit passed. Explicit recovery MUST report whether a sender hash was actually verified and retain complete bounded decompression, path/type/duplicate checks, and all resource ceilings. Missing implied directory entries MAY be created from validated file paths. Conflicting paths or file/directory types MUST NOT be guessed or merged.
 
-The reference `recover` operation retains all archived user paths beneath a new `files/` directory without interpreting a claimed logical root. Original `.cpc` entries are isolated under `metadata/.cpc/`; a report records the first CPC metadata failure and the limits of recovery. Fresh adjacent workspace state is generated from archive member facts. Stale manifest hashes are diagnostics in this mode only, and do not establish the correctness or completeness of recovered content. Any subsequent valid CPC is a new package, verified against its newly generated metadata. Recovery does not reconstruct missing data or validate a damaged outer carrier.
+The reference `recover` operation retains all archived user paths beneath a new `files/` directory without interpreting a claimed logical root. Original `.cpc` entries are isolated under `metadata/.cpc/`; a report records header warnings, sender integrity, the first CPC metadata failure and the limits of recovery. Fresh adjacent workspace state is generated from archive member facts. Stale manifest hashes are diagnostics and do not establish the correctness or completeness of recovered content. Any subsequent valid CPC is a new package, verified against its newly generated metadata. Recovery does not reconstruct missing data or establish integrity against an absent or mismatched original hash.
 
 ---
 
@@ -648,7 +652,7 @@ Supported LLM workflows should perform:
 ```text
 recognize recipe
 → decode
-→ verify outer hash
+→ check sender hash or warn; strict mode requires a match
 → safely inspect TAR
 → recover workspace
 → work selectively

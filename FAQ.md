@@ -12,6 +12,16 @@ Markdown is broadly accepted by chat and LLM file-upload surfaces.
 
 It turns the compressed binary archive into transport-safe text.
 
+## What if an LLM returns a different or broken header?
+
+Use `cpc returned.cpc.md` or `cpc u returned.cpc.md`. Basic restoration decodes
+the single block between `<CPC>` and `</CPC>`, warns about missing/nonstandard
+headers or unverified/mismatched hashes, and checks the full archive before
+extracting. It never silently repacks an intended `.cpc.md` input. Unsafe,
+ambiguous, incomplete or undecodable payloads still fail. `--strict` requires
+the canonical header, matching sender hash and complete metadata audit. A
+subsequent repack makes a new verified capsule, not proof of original integrity.
+
 ## Why XZ/LZMA2?
 
 Strong compression and long-standing Python standard-library support.

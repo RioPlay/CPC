@@ -1,10 +1,10 @@
 # CPC Conformance Requirements
 
 ## Reader MUST
-- identify CPC by content, not filename extension alone;
+- validate CPC by payload content; capsule-shaped filenames indicate restore intent, never automatic repacking;
 - parse exactly one CPC block;
 - strict-decode Base64 after removing allowed whitespace;
-- verify payload SHA-256;
+- compute payload SHA-256 and truthfully report verified, unverified or mismatched sender integrity;
 - decompress XZ/LZMA2;
 - parse TAR;
 - validate all member paths before publication;
@@ -37,9 +37,11 @@
 - work without a sidecar, with optional state for settings the filesystem cannot retain.
 
 Basic readers MUST retain transport and archive-safety checks while treating
-custom CPC metadata as optional. They MUST warn when its audit fails and MUST
+headers, supplied hashes and custom CPC metadata as advisory. They MUST warn
+when a header is absent/nonstandard, a hash is missing/ambiguous/mismatched, or an audit fails and MUST
 NOT let unverified state control extraction paths. Full-audit readers additionally
-require the internal state and manifest. Reference writers still emit and
+require a canonical header, matching compressed hash before decompression,
+and the internal state and manifest. Reference writers still emit and
 strictly verify full-profile output. A matching hash does not establish that
 the sender selected every intended file or authenticate the sender.
 

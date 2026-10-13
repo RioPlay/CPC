@@ -115,7 +115,7 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(state['root'], 'files')
                 self.assertEqual(state['source'], str(self.output/'recovered.cpc.md'))
 
-    def test_stale_file_hash_is_diagnostic_but_outer_hash_is_mandatory(self):
+    def test_stale_inner_and_outer_hashes_are_reported_without_losing_payload(self):
         manifest = b'd\t0\t0\t-\tP\nf\t1\t0\t'+b'0'*64+b'\tP/a\n'
         self.archive([('P', None), ('P/a', b'a'), ('.cpc/state', b'root=P\n'),
                       ('.cpc/manifest', manifest)])
@@ -124,8 +124,14 @@ class RecoveryTests(unittest.TestCase):
         data = self.cap.read_bytes()
         self.cap.write_bytes(data.replace(data.splitlines()[0].split(b'|')[-1], b'0'*64, 1))
         self.output = self.root/'hash-failure'
+        result = self.recover()
+        self.assertFalse(result['outer_hash_verified'])
+        self.assertEqual(result['integrity'], 'mismatch')
+        self.assertIn('HASH_MISMATCH', result['header_warning'])
+        self.assertEqual((self.output/'files/P/a').read_bytes(), b'a')
         with patch.object(cpc, 'decompress_to_file') as decoder:
-            self.assert_rejected('HASH_MISMATCH')
+            with self.assertRaisesRegex(cpc.CPCError, 'HASH_MISMATCH'):
+                cpc.full_verify(str(self.cap))
             decoder.assert_not_called()
 
     def test_member_list_mismatch_keeps_actual_archive_files(self):

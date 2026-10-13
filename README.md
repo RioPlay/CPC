@@ -50,7 +50,7 @@ Use `cpc <object>` for automatic handling:
 | File | Pack into a CPC capsule |
 | Folder | Pack the selected project files |
 | ZIP or other archive | Pack the original archive intact as an opaque file |
-| Existing CPC capsule | Verify and unpack, detected by its header rather than its filename |
+| Existing CPC capsule | Decode and unpack; `.cpc.md` always means an intended capsule, with content detection for other names |
 
 Invalid CPC input is rejected; it is not silently wrapped in another capsule. Archives are not automatically expanded or converted. Explicit `p` and `u` commands remain available when you want to specify the operation.
 
@@ -121,7 +121,11 @@ Repack generates a fresh, strictly verified capsule from the current tree. It us
 
 ### Basic restoration and replacement
 
-Normal `u` and `v` require the v1 envelope, matching compressed-payload SHA-256, complete bounded XZ decoding, and a safe complete TAR. Custom CPC state and manifests are optional for these operations. Missing, malformed or stale metadata produces a warning (including with `-q`); the reader uses actual archive paths instead. `v` reports whether the metadata audit also passed. Use `cpc v capsule.cpc.md --strict` or `cpc u capsule.cpc.md --strict` when the full metadata audit is required. The reference packer always emits and strictly verifies complete metadata, so its output remains readable by older CPC readers. Those readers still reject metadata-deficient input accepted by this broader basic-reader profile.
+Normal `u` and `v` decode exactly one payload between `<CPC>` and `</CPC>`. A missing, malformed or invented header does not block restoration when the Base64, complete single XZ stream and complete safe TAR are valid. Markdown titles/fences, leading blank lines and a UTF-8 BOM are tolerated outside the block. Missing, ambiguous or mismatched header hashes produce warnings, including with `-q`. `v` reports `integrity=verified|unverified|mismatch` separately from `metadata=verified|unverified`; unverified/mismatched input is reported as **RESTORABLE**, and unpack as **RESTORED**, rather than an integrity **PASS**. A matching hash is consistency with a supplied digest, not authentication or proof of source completeness.
+
+Custom CPC state and manifests are also optional for basic restoration. Missing, malformed or stale metadata produces a warning; the reader uses actual archive paths instead. Use `cpc v capsule.cpc.md --strict` or `cpc u capsule.cpc.md --strict` to require the canonical v1 header, a matching compressed-payload SHA-256 before decompression, and the full metadata audit. The reference packer always emits and strictly verifies canonical complete metadata, so its output remains readable by older CPC readers. Older readers may reject noncanonical input accepted by this broader reader profile. Ambiguous blocks, invalid Base64, incomplete/extra XZ streams, unsafe TARs and resource-limit violations remain errors in every mode.
+
+Automatic handling never silently packs a file named `.cpc.md` into another `.cpc.md`: it attempts restoration and reports the actual decoding failure. For other filenames, content detection examines the first 64 KiB; use `cpc u <file>` explicitly if an unusually long preamble prevents automatic recognition. Headers never supply extraction paths. Review warnings before using recovered work; repacking creates a new strictly verified capsule, not retroactive verification of the incoming data.
 
 Unpack writes project contents only by default. A folder capsule named `Project-v2.cpc.md` restores directly into `Project-v2/`, even if its archived folder was called `Project/`. Renaming the capsule gives each version a separate destination without nesting the old folder inside the new one. Both `cpc <capsule>` and `cpc u <capsule>` use this rule. The `.cpc.md` suffix is removed case-insensitively; other attachment names lose their last extension. Use `--original-root` to restore the archived folder name instead. Single-file capsules keep their actual filename and extension.
 
@@ -156,7 +160,7 @@ cpc v repaired.cpc.md
 
 Fresh adjacent workspace state supports repacking `files/`, carrying TAR executable bits across Windows. It uses the archive profile; normal `.cpcignore` rules still apply during repack, so review exclusions. Recovery preserves recorded TAR modification times by default when CPC metadata cannot be verified. Implicit directories receive new dates. For unsupported or malformed dates, explicitly use `--normalize-times`. Valid original metadata can select its existing normalized timestamp policy, but defective metadata never supplies workspace paths or settings.
 
-Recovery requires the existing v1 header, valid Base64, a matching outer SHA-256, a complete single XZ stream, and a complete safe TAR. It keeps all size/metadata/member limits and rejects unsafe paths, links, duplicate members, case collisions (including implied parents), file/directory conflicts, truncated members, and nonzero data after the TAR terminator. A stale inner file hash is recorded as a metadata failure; it is not evidence that the recovered file is correct. Recovery cannot prove original completeness or recreate files, dates, permissions, or policies that were never recorded. Repacking creates a new valid capsule from the recovered contents, not retroactive validation of the original.
+Recovery requires exactly one marker-delimited payload, valid Base64, a complete single XZ stream, and a complete safe TAR. Header/hash problems produce warnings and are recorded in `recovery.json`, including whether an outer hash was actually verified. It keeps all size/metadata/member limits and rejects unsafe paths, links, duplicate members, case collisions (including implied parents), file/directory conflicts, truncated members, and nonzero data after the TAR terminator. A stale inner file hash is recorded as a metadata failure; it is not evidence that the recovered file is correct. Recovery cannot prove original completeness or recreate files, dates, permissions, or policies that were never recorded. Repacking creates a new valid capsule from the recovered contents, not retroactive validation of the original.
 
 ### Modification times
 
@@ -280,8 +284,8 @@ For a reproducible example, `python tools/measure_sizes.py` measures CPC's Pytho
 
 | Input | File bytes before packing | Final `.cpc.md` bytes | Output / input |
 |---|---:|---:|---:|
-| CPC Python source and tests | 185,978 | 51,857 | 27.9% |
-| Same source plus compressed asset | 1,234,992 | 1,452,253 | 117.6% |
+| CPC Python source and tests | 198,122 | 54,685 | 27.6% |
+| Same source plus compressed asset | 1,247,136 | 1,455,065 | 116.7% |
 
 Measured on Python 3.13 with this source revision. Sizes vary with source contents, source modification times and the LZMA runtime. The fixture retains source file dates and derives synthetic directory dates from their contents, so temporary staging time does not affect repeated measurements. Generated fixtures stay in a temporary directory. Check the final capsule size against the receiving interface's upload cap.
 
@@ -329,6 +333,6 @@ The builder packages only the listed source, documentation, and tests. It does n
 
 ## Status and license
 
-Tooling version: **0.3.0-rc.6**. Wire version: **1**. The format specification remains a draft.
+Tooling version: **0.3.0-rc.7**. Canonical writer wire version: **1**. The format specification remains a draft.
 
 Created and maintained by **RioPlay**. Released under the [MIT License](LICENSE).

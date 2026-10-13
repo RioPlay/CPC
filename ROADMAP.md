@@ -5,10 +5,12 @@ return the same transport format, and restore the finished tree locally.
 
 ## This implementation
 
-1. **Basic transport restoration.** Keep the v1 header, SHA-256 over XZ bytes,
+1. **Basic transport restoration.** Keep canonical v1 writer output and
    Base64/XZ/TAR, bounded decoding, safe paths and complete archive checks.
-   Accept missing or inconsistent CPC-specific metadata with a warning.
-   Keep the full metadata audit available through `--strict`.
+   Decode a single marker-delimited payload despite missing/invented headers,
+   mismatched or unavailable hashes, and defective optional metadata, with
+   explicit integrity warnings. `--strict` requires canonical header/hash and
+   the full metadata audit.
 2. **Predictable destinations.** Infer a single top-level file/folder from the
    actual archive if metadata is unavailable. Multiple roots require an
    explicit output directory and retain all paths. Default refuses overwrite;
@@ -40,6 +42,13 @@ are required for this milestone. Hashes establish consistency with the sent
 bytes, not sender identity or whether the sender selected every intended file.
 
 ## Completion record
+
+2026-10-13: payload-first decoding accepts supplementary header variations and
+Markdown wrappers. Sender hash status is reported separately from inner metadata
+and archive safety. Capsule filenames force restore intent instead of accidental
+double-packing. Canonical writers and strict audits remain available. The new
+header regression suite covers this behavior, chunk boundaries and rejection of
+ambiguous/unsafe payloads; release tooling is now 0.3.0-rc.7.
 
 Completed locally on 2026-10-07:
 

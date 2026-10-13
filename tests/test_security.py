@@ -25,8 +25,8 @@ class ReceiverTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "input.cpc.md"
         self.raw = self.parse(ROOT / "demo_project.cpc.md")["raw"]
 
-    def parse(self, path):
-        with cpc.parse_capsule(str(path)) as info:
+    def parse(self, path, strict_header=False):
+        with cpc.parse_capsule(str(path), strict_header=strict_header) as info:
             return dict(info, raw=info["raw"].read())
 
     def carrier(self, packed):
@@ -60,7 +60,7 @@ class ReceiverTests(unittest.TestCase):
         self.path.write_text(text.replace(text.splitlines()[0].split("|")[-1], "0" * 64))
         with patch.object(cpc.lzma, "LZMADecompressor") as decoder:
             with self.assertRaisesRegex(cpc.CPCError, "HASH_MISMATCH"):
-                self.parse(self.path)
+                self.parse(self.path, strict_header=True)
             decoder.assert_not_called()
 
     def test_reject_incomplete_extra_and_wrong_codec(self):
