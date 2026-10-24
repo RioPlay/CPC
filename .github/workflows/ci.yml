@@ -28,6 +28,8 @@ jobs:
         run: python tests/test_streaming.py
       - name: Export and multipart regressions
         run: python tests/test_export.py
+      - name: Validated handoffs and cold-sandbox returns
+        run: python tests/test_handoff.py
       - name: Timestamp preservation and policy regressions
         run: python tests/test_timestamps.py
       - name: Explicit recovery and shared safety regressions
@@ -40,8 +42,8 @@ jobs:
         run: python bin/cpc.py --version
       - name: Verify bundled capsules
         run: |
-          python bin/cpc.py v standard/test-vector.cpc.md
-          python bin/cpc.py v demo_project.cpc.md
-          python bin/cpc.py v CPC.cpc.md
+          python bin/cpc.py v standard/test-vector.cpc.md --strict
+          python bin/cpc.py v demo_project.cpc.md --strict
+          python bin/cpc.py v CPC.cpc.md --strict
       - name: Check release file allowlist
         run: python tools/build_capsule.py --check

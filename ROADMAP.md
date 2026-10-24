@@ -29,13 +29,52 @@ return the same transport format, and restore the finished tree locally.
    state, multipart transport and hostile/corrupted inputs. Refresh public
    docs, CI and the allowlisted self-capsule.
 
+## Validated handoff draft (0.3.0-rc.8)
+
+The first implementation slice adds `cpc handoff`: use the reference packer,
+strictly validate, compare selected source contents, check a clean restore, and
+publish a complete return directory only after those checks pass. Optional
+`--project-name` and `--project-version` produce short explicit filename labels.
+The command emits a hash-bound audit report and explicitly marks application
+validation as not run. It is not signed producer attestation.
+
+Every export now includes the runnable `HANDOFF.md`, whether the capsule fits
+in one file or needs transport parts. Explicit CLI include/exclude rules travel
+in optional metadata and `--state` workspaces; comparison and repack reuse them.
+Basic recovery remains available, but incomplete metadata no longer receives a
+standalone PASS status. The v1 wire envelope and codecs remain unchanged.
+
+Review fixes halt source scanning on directory I/O errors and bind guide
+verification/restoration to the expected complete-carrier hash. Regressions
+cover an unreadable included directory that previously disappeared from a PASS
+handoff, and a different valid capsule that must fail the expected identity
+before decompression. Explicit exclusions remain permitted and reported.
+
+Cold-directory tests cover restoring, editing and returning through only the
+exported CLI for both sizes, with independent strict checks of the returned
+artifact. This is not yet evidence that fresh LLM chats reliably follow the
+guide, or that Windows/macOS have passed this draft's CI matrix.
+
 ## Separate follow-up
 
+- Deterministic project-state change planning and automatic third-component
+  revision allocation, excluding generated bookkeeping from change decisions.
+- Baseline-aware completeness checks and a preflight explaining selection rules,
+  required paths, and unexpected removals. Self-consistency alone does not prove
+  that an edited project still contains every intended file.
+- Stable project identity, parent checkpoints and guarded shared-head updates
+  before multiple chats can allocate or promote versions concurrently.
+- A resumable work contract and one real fresh-chat continuation before adding
+  scheduled work. Keep source history in Git where already available.
+- Cross-model handoff trials that record whether the supplied command was used,
+  and independently validate the returned artifact rather than trusting prose.
+
 A self-contained Markdown handoff with the actual packer and one return
-command remains the next prevention improvement. Its outer carrier needs an
-explicit design/version and fresh-sandbox tests; it is not part of the core
-reader/workspace change above. Keep splitting conditional on the complete
-export exceeding the configured limit.
+command in the same single attachment remains a separate carrier-design task.
+The current guide-plus-capsule bundle already supplies the runnable packer and
+one return command without embedding executable instructions in the v1 carrier.
+A combined carrier needs an explicit design/version and fresh-sandbox tests.
+Keep splitting conditional on the complete export exceeding the configured limit.
 
 No signatures, parent chains, deltas, new codecs or installation dependencies
 are required for this milestone. Hashes establish consistency with the sent
