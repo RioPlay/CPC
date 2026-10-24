@@ -90,7 +90,7 @@ class HandoffTests(unittest.TestCase):
                                     includes=["keep.txt"], excludes=["*.secret"])
                 guide = (attachments / "HANDOFF.md").read_text(encoding="utf-8")
                 receiver = guide.split("````python\n", 1)[1].rsplit("````", 1)[0]
-                self.assertEqual(receiver, (ROOT / "bin/cpc.py").read_text().rstrip("\n") + "\n")
+                self.assertEqual(receiver, (ROOT / "bin/cpc.py").read_text(encoding="utf-8").rstrip("\n") + "\n")
                 (cold / "cpc-recover.py").write_text(receiver, encoding="utf-8")
 
                 def run(*args):
