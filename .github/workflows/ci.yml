@@ -36,6 +36,8 @@ jobs:
         run: python tests/test_basic.py
       - name: Payload-first headers and integrity warnings
         run: python tests/test_headers.py
+      - name: Release content verification regressions
+        run: python tests/test_build_capsule.py
       - name: CLI smoke test
         run: python bin/cpc.py --version
       - name: Verify bundled capsules
@@ -43,5 +45,5 @@ jobs:
           python bin/cpc.py v standard/test-vector.cpc.md
           python bin/cpc.py v demo_project.cpc.md
           python bin/cpc.py v CPC.cpc.md
-      - name: Check release file allowlist
+      - name: Check release file allowlist and source bytes
         run: python tools/build_capsule.py --check

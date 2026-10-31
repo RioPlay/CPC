@@ -329,7 +329,11 @@ Build the distributable project capsule from its explicit file list:
 python tools/build_capsule.py
 ```
 
-The builder packages only the listed source, documentation, and tests. It does not package the entire working directory. CI checks the published capsule's file list and runs the regression suite on Windows, macOS, and Linux with Python 3.9, 3.11, 3.13, and 3.14.
+The builder packages only the listed source, documentation, and tests. It does not package the entire working directory. `python tools/build_capsule.py --check` verifies the existing capsule's integrity, file list, and file bytes against the working source without rebuilding it; differing modification dates alone do not fail the check. CI runs this check and the regression suite on Windows, macOS, and Linux with Python 3.9, 3.11, 3.13, and 3.14.
+
+Git attributes keep text checkouts consistent across platforms: LF by default,
+with CRLF for PowerShell scripts. Build release capsules from a Git checkout so
+these declared working-tree line endings are applied.
 
 ## Status and license
 
