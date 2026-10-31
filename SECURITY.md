@@ -68,3 +68,14 @@ Basic `u`/`v`, explicit `recover` and full `--strict` auditing share bounded car
 All reader modes check implied parent paths for case and file/directory conflicts. The member ceiling also bounds explicit and implied filesystem paths. Complete TAR end blocks are required; nonzero data following the final member, concatenated TAR archives and truncated file bodies are rejected before extraction. Recovery retains the other existing resource ceilings. As with ordinary extraction, hostile concurrent changes to the destination parent and abrupt process termination are outside the atomic-publication guarantee.
 
 Normal unpack creates no adjacent state unless `--state` is requested. Unverified metadata never supplies output paths or policy. A single actual top-level item determines the archive root; multiple roots require an explicit output directory. The project folder's publication name defaults to the capsule filename stem, subject to portable-name checks; `--original-root` uses the archived name. Single-file restores keep their archived filename. The input capsule cannot be its own output destination. All archive checks run before this publication rename; the capsule bytes and child paths are unchanged. Whole-tree replacement requires `-f` or `-b` and occurs after staged extraction. Existing adjacent state blocks a stateless restore to avoid silently reusing stale settings. Optional sidecar writes retain the legacy post-publication behavior: a sidecar-write failure can leave a successfully restored tree; default stateless restore does not have that additional write.
+# Self-contained receiver trust boundary
+
+Self-contained exports carry a compressed copy of the standalone CLI. The small
+readable bootstrap validates bounded decoding, source length and SHA-256, then
+writes source into a new directory. It does not execute the receiver or project.
+Review the recovered receiver before the explicit restore command. A sender can
+replace both code and its hash; integrity is not authentication or code safety.
+
+`restore` performs strict archive verification, stages extraction, retains state
+and reads back files before publishing a workspace and receipt. It never starts
+project commands. Failure or an existing destination does not replace user work.

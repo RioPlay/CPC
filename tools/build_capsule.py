@@ -15,7 +15,7 @@ FILES = (
     ".cpcignore", ".gitattributes", ".gitignore",
     ".github/workflows/ci.yml",
     "README.md", "FAQ.md", "ROADMAP.md", "CONTRIBUTING.md", "GOVERNANCE.md",
-    "LICENSE", "PROJECT.json", "SECURITY.md",
+    "LICENSE", "PROJECT.json", "SECURITY.md", "TRANSFER_VALIDATION.md",
     "bin/cpc.py", "bootstrap.py", "install.ps1", "install.sh",
     "demo_project/README.md", "demo_project.cpc.md",
     "standard/README.md", "standard/SPEC.md", "standard/CONFORMANCE.md",
@@ -24,7 +24,7 @@ FILES = (
     "standard/test-vector.cpc.md", "tests/test_cpc.py", "tests/test_security.py",
     "tests/test_streaming.py", "tests/test_export.py", "tests/test_timestamps.py",
     "tests/test_recovery.py", "tests/test_basic.py", "tests/test_headers.py",
-    "tests/test_build_capsule.py", "tools/build_capsule.py", "tools/measure_sizes.py",
+    "tests/test_build_capsule.py", "tests/test_transfer.py", "tests/test_handoff.py", "tools/build_capsule.py", "tools/measure_sizes.py",
     "tools/profile_resources.py",
 )
 
@@ -65,7 +65,11 @@ def main():
             for directory in sorted(directories, key=lambda p: len(p.parts), reverse=True):
                 ns = max(p.stat().st_mtime_ns for p in directory.iterdir())
                 os.utime(directory, ns=(ns, ns))
-            cpc.pack(str(stage), output=str(output), force=True)
+            bare = Path(tmp)/"bare"/"CPC.cpc.md"
+            cpc.pack(str(stage), output=str(bare))
+            exported = Path(tmp)/"export"
+            cpc.export_handoff(bare, exported)
+            cpc.atomic_write(str(output), (exported/"CPC.cpc.md").read_bytes(), force=True)
     info = cpc.full_verify(str(output))
     expected = {"CPC/" + name for name in FILES}
     actual = {name for name, record in info["manifest"].items()
@@ -85,6 +89,8 @@ def main():
             mismatched.append(name)
     if mismatched:
         raise RuntimeError(f"Release content mismatch: {mismatched}")
+    if not output.read_bytes().endswith(cpc.receiver_footer()):
+        raise RuntimeError("Release receiver mismatch: rebuild the self-contained capsule")
     print(f"CPC release capsule verified: {len(actual)} files, "
           f"{output.stat().st_size} bytes")
 

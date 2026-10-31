@@ -56,6 +56,19 @@ No. Run `python bin/cpc.py` directly from the downloaded project. Other implemen
 
 Ordinary `cpc u` now accepts intact transport archives with defective optional metadata and warns. Use `--strict` to require the full audit, or `cpc recover returned.cpc.md -o new-recovery/` to retain original metadata and a diagnostic report separately. Recovery accepts missing or inconsistent CPC metadata, recreates implied directories, and keeps original paths beneath `new-recovery/files/`. It retains original metadata separately and writes a diagnostic report. It does not bypass unsafe paths, resource ceilings, or outer hash failures. `cpc r new-recovery/files/ -o repaired.cpc.md` creates and verifies fresh metadata from those recovered contents; it cannot prove the original project was complete.
 
+## How should an LLM return edited work?
+
+Use `cpc export WORKSPACE -o NEW_DIRECTORY`. A fitting export contains one
+self-contained `.cpc.md` with the project, receiver and restore instructions.
+Source exports verify the capsule, compare source contents and check a clean
+restore before publication. If splitting is required, return every produced
+file. Packaging does not execute application tests or authenticate a producer.
+
+For an explicit named/versioned audit bundle, `cpc handoff` remains available;
+it intentionally produces a separate guide and validation report. A bare
+capsule from `pack`, `repack` or `export --bare` requires a separate reader.
+
+
 ## Who maintains CPC?
 
 CPC was created and is maintained by RioPlay.

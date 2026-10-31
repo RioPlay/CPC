@@ -29,13 +29,50 @@ return the same transport format, and restore the finished tree locally.
    state, multipart transport and hostile/corrupted inputs. Refresh public
    docs, CI and the allowlisted self-capsule.
 
+## Validated handoff draft (0.3.0-rc.8)
+
+The first implementation slice adds `cpc handoff`: use the reference packer,
+strictly validate, compare selected source contents, check a clean restore, and
+publish a complete return directory only after those checks pass. Optional
+`--project-name` and `--project-version` produce short explicit filename labels.
+The command emits a hash-bound audit report and explicitly marks application
+validation as not run. It is not signed producer attestation.
+
+Normal export now puts the compressed receiver, readable bootstrap and concrete
+restore/return instructions in one attachment whenever it fits. The `restore`
+command verifies and reads back the workspace before publishing a receipt.
+The earlier named `handoff` audit-bundle mode remains optional. Explicit
+include/exclude rules travel in metadata/state and are retained on return.
+Basic-only metadata no longer receives a standalone PASS status.
+
+Review fixes halt source scanning on directory I/O errors and bind guide
+verification/restoration to the expected complete-carrier hash. Regressions
+cover an unreadable included directory that previously disappeared from a PASS
+handoff, and a different valid capsule that must fail the expected identity
+before decompression. Explicit exclusions remain permitted and reported.
+
+Cold-directory tests cover restoring, editing and returning through only the
+exported CLI for both sizes, with independent strict checks of the returned
+artifact. This is not yet evidence that fresh LLM chats reliably follow the
+guide, or that Windows/macOS have passed this draft's CI matrix.
+
 ## Separate follow-up
 
-A self-contained Markdown handoff with the actual packer and one return
-command remains the next prevention improvement. Its outer carrier needs an
-explicit design/version and fresh-sandbox tests; it is not part of the core
-reader/workspace change above. Keep splitting conditional on the complete
-export exceeding the configured limit.
+- Deterministic project-state change planning and automatic third-component
+  revision allocation, excluding generated bookkeeping from change decisions.
+- Baseline-aware completeness checks and a preflight explaining selection rules,
+  required paths, and unexpected removals. Self-consistency alone does not prove
+  that an edited project still contains every intended file.
+- Stable project identity, parent checkpoints and guarded shared-head updates
+  before multiple chats can allocate or promote versions concurrently.
+- A resumable work contract and one real fresh-chat continuation before adding
+  scheduled work. Keep source history in Git where already available.
+- Cross-model handoff trials that record whether the supplied command was used,
+  and independently validate the returned artifact rather than trusting prose.
+
+The single-attachment wrapper is implemented without changing the v1 project
+payload. Cold subprocess tests and two scoped Luna trials are documented in
+TRANSFER_VALIDATION.md. Broader repeated/cross-model testing remains open.
 
 No signatures, parent chains, deltas, new codecs or installation dependencies
 are required for this milestone. Hashes establish consistency with the sent
@@ -66,4 +103,4 @@ Completed locally on 2026-10-07:
   stateless round trip, multiple roots, malicious metadata, overwrite/backup,
   publication rollback, optional state and multipart transport.
 - No new runtime dependencies, codec changes, or automatic history tracking.
-  The separate self-contained carrier above remains unimplemented.
+  A later rc.8 increment adds the optional self-contained recovery wrapper.

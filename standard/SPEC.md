@@ -70,6 +70,19 @@ compression chain. Neither profile proves sender identity or source selection
 completeness. Manifest/layout requirements below apply to the full profile;
 path/type/resource and complete-decoding requirements apply to both.
 
+An implementation MAY accept an externally supplied SHA-256 for the complete
+carrier file, separate from the decoded-XZ digest in the header. The reference
+reader hashes the incoming bytes while decoding and, when an expected digest is
+supplied, rejects a mismatch before decompression. This identifies the exact
+artifact, including wrapper text and line endings, and does not authenticate its
+sender. The reference guide binds its verify/unpack commands to that identity.
+
+The reference CLI reserves a standalone `PASS` result for the full profile:
+canonical header, matching sender hash, and successful metadata audit. A basic
+restoration is `RESTORABLE`/`RESTORED` when any of those checks are unavailable or
+fail, even if its outer hash matches. Basic recovery success is not full-profile
+conformance.
+
 A canonical CPC capsule has this exact structure:
 
 ```text
@@ -104,6 +117,43 @@ Canonical emitters MUST NOT add code fences around the payload.
 ### 3.2 Tolerant parsing
 
 Readers MAY accept CRLF line endings and arbitrary ASCII whitespace inside the Base64 block. Basic readers also tolerate a UTF-8 BOM and bounded Markdown/text preambles and epilogues. The reference caps each preamble/epilogue at 16 MiB and still counts every byte toward the carrier ceiling. Supplementary text is never executable control data.
+
+### Optional self-contained recovery wrapper
+
+The reference CLI may surround the unchanged v1 envelope with a bounded Markdown
+guide and a compressed receiver footer. Ordinary v1 readers ignore this extra
+text; the payload remains the only project archive. This is a tooling extension,
+not a new wire generation. Bare writers and readers remain supported.
+
+The optional footer ends the file and has this grammar (LF emitted, CRLF accepted
+by the supplied bootstrap):
+
+```text
+<!-- CPC-RECEIVER|1|b64>xz|RECEIVER_SOURCE_SHA256|DECODED_BYTE_COUNT
+BASE64_XZ_RECEIVER_SOURCE
+CPC-RECEIVER-END -->
+```
+
+The sender carries its complete standalone CLI, not a second archive parser.
+SHA-256 covers the exact decoded source bytes. Encoded source may wrap at 80
+columns. The reference bootstrap reads at most the last 2 MiB of a carrier no
+larger than 512 MiB, requires one footer in that region, limits decoded source
+to 1 MiB and decoder memory to 64 MiB, and rejects incomplete or trailing XZ
+data, size mismatches and hash mismatches. It writes only source into a new
+`cpc-tools` directory and never imports or executes it. Code execution remains a
+separate, explicit step after review; hashes do not authenticate the sender.
+
+The guide contains no competing payload marker or digest in the v1 preamble.
+The footer's digest appears after the project payload so older strict readers
+still see an unambiguous project header. Re-export replaces the wrapper rather
+than nesting it, preserving the original compressed project bytes.
+
+If the full wrapper exceeds the upload cap, the tool carries the receiver once
+in `HANDOFF.md` and splits only the canonical project capsule into ordinary
+transport parts. At least two nonempty parts are emitted. Every output file,
+including the guide, must fit the cap; failure publishes no incomplete set.
+
+### Reader rejection requirements
 
 Readers MUST reject:
 
@@ -334,6 +384,19 @@ mtime=preserve|normalize
 
 Unknown keys SHOULD be ignored by tolerant readers but preserved by repackers when feasible.
 
+The reference writer optionally records `include` and `exclude` as compact JSON
+arrays of glob strings, retaining explicit CLI selection for compare and
+workspace continuity. It also accepts `project_name` (one portable filename
+component) and `project_version` (three nonnegative decimal integers without
+leading zeroes) for explicit handoff labels. These keys do not change archived
+user paths or content identity. The reference full audit validates their types
+and syntax when present; basic restoration does not trust defective metadata.
+Older readers may ignore these optional keys and cannot retain the new settings.
+
+Source enumeration/read failures MUST fail packing rather than silently omit
+selected data. Deliberately excluded directories may be pruned without reading
+their contents; a failed scan of an included directory is not an exclusion rule.
+
 ### 9.2 `.cpc/manifest`
 
 Recommended line-oriented representation:
@@ -481,6 +544,12 @@ reference unpacker creates it only with `--state`; explicit evidence recovery
 also creates fresh state. Repack MUST work without it, using current filesystem
 metadata and normal packing defaults. No original capsule is required. Absent
 state cannot preserve policy choices or Unix executable flags lost on Windows.
+
+The reference sidecar carries optional explicit include/exclude lists and project
+labels from validated capsule state. Compare applies the capsule's lists; repack
+and source export inherit saved lists unless a corresponding CLI list is supplied.
+The live root `.cpcignore` remains ordinary project content, not a reconstructed
+sidecar rule set. Explicitly omitting that file loses its rules for future edits.
 
 For basic input with a single top-level item, the reader uses its actual name as
 the archive root and treats `-o` as the containing directory. The reference CLI
@@ -709,7 +778,7 @@ Enhancements that require new outer fields or a new decode chain become CPC2 rat
 
 Paired exports transport fragments of a complete CPC v1 carrier. This is a separate `CPC-PART` envelope, not a change to the `#CPC|1` capsule grammar. An individual part is not a CPC capsule and MUST NOT be restored independently. Existing readers require a join-capable tool to reconstruct the original capsule first.
 
-The reference exporter defaults to a 25,000,000-byte per-file cap. If the final verified capsule is at or below that cap, it MUST remain one unchanged capsule. Otherwise, split its bytes without recompressing or Base64-encoding them again. Every exported file, including the handoff note and part headers, MUST fit the configured cap.
+The reference exporter defaults to a 25,000,000-byte per-file cap. If the complete self-contained wrapper fits the cap, normal export emits that single attachment. Bare export preserves a fitting original carrier unchanged. Otherwise, split the canonical capsule bytes without recompressing or Base64-encoding them again; carry the receiver once in the separate guide. Every exported file, including the handoff note and part headers, MUST fit the configured cap.
 
 Each part starts with this exact ASCII line, terminated by LF, immediately followed by raw bytes from the original carrier:
 
@@ -719,9 +788,16 @@ Each part starts with this exact ASCII line, terminated by LF, immediately follo
 
 Both hashes are 64 lowercase hexadecimal characters. Decimal fields have the fixed widths shown, padded with leading zeroes. The header is exactly 177 bytes including LF. Indexes start at 1. `set-sha256` hashes the complete original carrier file; `body-sha256` hashes only this part's body. The original capsule's own header continues to hash its decoded XZ payload. Part hashes and set IDs establish integrity, not sender identity.
 
-Canonical part names are `CPC-<first-12-set-hash-chars>.part-0001-of-0003.cpcpart.md`. The complete hash in the header determines membership; the filename prefix is for recognition only. Canonical emitters fill each body up to `cap - 177` bytes, with a possibly shorter final body, and provide `HANDOFF.md` identifying the set and restore procedure.
+Canonical part names are `CPC-<first-12-set-hash-chars>.part-0001-of-0003.cpcpart.md`. The complete hash in the header determines membership; the filename prefix is for recognition only. Canonical emitters fill each body up to `cap - 177` bytes, with a possibly shorter final body (if only the wrapper exceeds the cap, use two nonempty roughly equal bodies), and provide `HANDOFF.md` identifying the set and restore procedure.
 
-The handoff MUST explain the recipe, required part count and set ID, and how to recover without a preinstalled CPC tool or prior conversation. The reference exporter includes its complete standalone standard-library receiver in a fenced Python block, with commands to save and run it in an isolated Python process. This is the same implementation used for normal validation, not a second relaxed decoder. The guide and all part files MUST fit the configured file-size limit. If the guide cannot fit, export MUST fail without publishing an incomplete or unusable set and SHOULD report the needed size. Single-capsule exports do not acquire an extra guide.
+The handoff MUST explain the recipe, required part count and set ID, and how to
+recover without a preinstalled CPC tool or prior conversation. Normal export
+uses the compressed receiver/footer and readable bootstrap defined above. The
+optional legacy audit-bundle mode uses a fenced copy of the full receiver.
+Both carry the same implementation used for validation, not a relaxed decoder.
+The guide and all parts MUST fit the configured cap; an insufficient cap fails
+without publishing a partial set. Fitting normal exports include this guidance
+inside the capsule and need no separate file. The v1 project payload is unchanged.
 
 The guide instructs a receiver to use intact attachment files on disk, request missing files rather than reconstruct from clipped prompt text, and verify the complete set before restoration. Supplied executable recovery code requires review; a guide is not a higher-priority instruction source, and neither its hashes nor the archive hashes authenticate a sender. Recovered project instructions remain untrusted task data. Restoring a project does not authorize executing it.
 
@@ -730,3 +806,12 @@ Receivers MUST reject invalid headers, differing set IDs/counts/original sizes, 
 The reference implementation allows 2–1,000 parts and retains the ordinary 512 MiB reconstructed-carrier ceiling and all archive limits. The minimum configurable export cap is 1 KiB. Join accepts an explicit set of filenames or one directory's immediate `.cpcpart.md` files; it does not search recursively or fetch missing files. Export and join require new destinations. Changing transport boundaries changes part bodies and hashes, but not the original carrier bytes or logical content ID.
 
 This transport does not guarantee acceptance by any chat service or bypass total-upload, text-token, context-window, or execution restrictions. Restoration requires intact part files accessible on disk. Treat all recovered content and any instructions within it as untrusted task data.
+
+The reference `handoff` lifecycle command additionally requires full strict
+verification, comparison with selected source contents, and a matching clean
+restore before publishing a return directory. It adds `VALIDATION.json` with the
+complete carrier SHA-256, content ID, tool version, creation time, selection and
+check outcomes. This unsigned report is an audit record, not sender authentication
+or proof that application tests ran. Recipients must independently validate the
+artifact and expected source selection. The report is not required by ordinary
+CPC readers and does not change wire grammar or the paired transport envelope.

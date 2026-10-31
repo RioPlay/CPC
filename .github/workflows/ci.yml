@@ -28,6 +28,10 @@ jobs:
         run: python tests/test_streaming.py
       - name: Export and multipart regressions
         run: python tests/test_export.py
+      - name: Self-contained transfer and cold restore regressions
+        run: python tests/test_transfer.py
+      - name: Validated named handoff regressions
+        run: python tests/test_handoff.py
       - name: Timestamp preservation and policy regressions
         run: python tests/test_timestamps.py
       - name: Explicit recovery and shared safety regressions

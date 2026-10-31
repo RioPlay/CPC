@@ -81,19 +81,40 @@ cpc r recovered/Project/ -o Project-updated.cpc.md
 
 For a chat handoff of CPC itself, download [CPC.cpc.md](https://github.com/RioPlay/CPC/raw/refs/heads/main/CPC.cpc.md).
 
-### Recover CPC without installing it
-
-Put the self-capsule and the reviewed [standalone reference CLI](bin/cpc.py) in the same folder, then run:
+### Return edited work
 
 ```bash
-python cpc.py v CPC.cpc.md
-python cpc.py u CPC.cpc.md -o recovered/
-python recovered/CPC/bin/cpc.py --version
+cpc export Project/ -o ../return-files
 ```
 
-The receiver needs Python with LZMA support, but no package installation. Decoding the capsule does not execute any of its contents; the last command explicitly runs the recovered CLI after you have chosen to trust its source. Keep recovered project instructions separate from the receiver's own validation rules.
+Upload the single `.cpc.md` in `return-files/` when it fits. Source exports now
+run strict verification, source comparison and a clean restore comparison before
+publication. No project commands or application tests are executed by packaging.
+The receiving model gets the recovery tool and a concrete restore/return recipe
+in that same attachment. See [one-file exports](#one-file-exports-for-chat).
 
-A bare v1 capsule does not include a readable recovery program outside its compressed payload. A fresh sandbox still needs the supplied CLI; the format header alone is not a complete bootstrap. Do not ask a model to invent an encoder or metadata. Running the standalone CLI directly is sufficient: `bootstrap.py` installs launchers but is not needed to restore or return a project.
+For users who explicitly need filename/version labels and a separate audit
+report, the earlier `cpc handoff` command remains available. That optional mode
+produces `HANDOFF.md`, `VALIDATION.json` and the capsule/parts, and accepts
+`--project-name NAME --project-version A.B.R`. It is not needed for ordinary
+single-file transfers. Versions are explicit labels, not automatic allocation.
+
+An expected full-carrier hash from another trusted channel can be checked using
+`--expect-sha256 HEX` with verify, unpack or restore. Legacy separate guides use
+this to reject pairing with the wrong capsule. A matching hash does not
+establish sender identity. The self-contained file needs no separate guide.
+
+### Recover CPC without installing it
+
+Download only `CPC.cpc.md` and follow the instructions at its beginning. It now
+includes the full receiver in compressed form and a small readable bootstrap.
+The bootstrap recovers source for review; it never executes the receiver or
+project. Python 3.9+ with LZMA is sufficient; no installation or network is needed.
+
+Ordinary `pack`/`repack` and `export --bare` still produce minimal capsules without
+this tool. Use normal `export` when the recipient needs a self-contained file.
+Do not ask a model to invent an encoder or metadata. `bootstrap.py` in the project
+installs launchers and is not needed for the attachment workflow.
 
 ### Commands
 
@@ -111,7 +132,8 @@ A bare v1 capsule does not include a readable recovery program outside its compr
 | `cpc c <capsule> <path>` | Compare with local files |
 | `cpc x <capsule> <member>` | Extract selected content |
 | `cpc n <capsule> <name>` | Rename the logical root |
-| `cpc export <source-or-capsule> -o <directory>` | Export one capsule or a size-limited paired set |
+| `cpc export <source-or-capsule> -o <directory>` | Export one self-contained attachment, splitting only when required |
+| `cpc restore <capsule> -o <new-directory>` | Strict restore, read-back and a workspace receipt |
 | `cpc join <directory-or-parts...> -o <capsule>` | Verify and reconstruct a complete paired set |
 
 Existing output is protected by default. Use `-f` to explicitly allow replacement or `-b` to back up existing output.
@@ -121,7 +143,7 @@ Repack generates a fresh, strictly verified capsule from the current tree. It us
 
 ### Basic restoration and replacement
 
-Normal `u` and `v` decode exactly one payload between `<CPC>` and `</CPC>`. A missing, malformed or invented header does not block restoration when the Base64, complete single XZ stream and complete safe TAR are valid. Markdown titles/fences, leading blank lines and a UTF-8 BOM are tolerated outside the block. Missing, ambiguous or mismatched header hashes produce warnings, including with `-q`. `v` reports `integrity=verified|unverified|mismatch` separately from `metadata=verified|unverified`; unverified/mismatched input is reported as **RESTORABLE**, and unpack as **RESTORED**, rather than an integrity **PASS**. A matching hash is consistency with a supplied digest, not authentication or proof of source completeness.
+Normal `u` and `v` decode exactly one payload between `<CPC>` and `</CPC>`. A missing, malformed or invented header does not block restoration when the Base64, complete single XZ stream and complete safe TAR are valid. Markdown titles/fences, leading blank lines and a UTF-8 BOM are tolerated outside the block. Header, hash and metadata warnings remain visible with `-q`. `v` reports `integrity=verified|unverified|mismatch` separately from `metadata=verified|unverified`. Only a canonical header, verified hash and successful metadata audit receive **PASS**. Other safely restorable input is reported as **RESTORABLE**, and unpack as **RESTORED**, even when its outer hash matches. A matching hash is consistency with a supplied digest, not authentication or proof of source completeness.
 
 Custom CPC state and manifests are also optional for basic restoration. Missing, malformed or stale metadata produces a warning; the reader uses actual archive paths instead. Use `cpc v capsule.cpc.md --strict` or `cpc u capsule.cpc.md --strict` to require the canonical v1 header, a matching compressed-payload SHA-256 before decompression, and the full metadata audit. The reference packer always emits and strictly verifies canonical complete metadata, so its output remains readable by older CPC readers. Older readers may reject noncanonical input accepted by this broader reader profile. Ambiguous blocks, invalid Base64, incomplete/extra XZ streams, unsafe TARs and resource-limit violations remain errors in every mode.
 
@@ -164,7 +186,7 @@ Recovery requires exactly one marker-delimited payload, valid Base64, a complete
 
 ### Modification times
 
-New packs **preserve file and directory modification times by default**, including fractional seconds. Restore applies dates in staging before publication. Repack uses current filesystem dates, inheriting saved policy only when optional adjacent state exists. Restored-source export also inherits optional state; exporting an existing capsule keeps its bytes intact. Without state, repack/export use preservation by default; select normalization explicitly when needed.
+New packs **preserve file and directory modification times by default**, including fractional seconds. Restore applies dates in staging before publication. Repack uses current filesystem dates, inheriting saved policy only when optional adjacent state exists. Restored-source export also inherits optional state; exporting an existing capsule keeps its compressed project payload intact. Without state, repack/export use preservation by default; select normalization explicitly when needed.
 
 For a smaller, timestamp-independent capsule, explicitly choose normalization:
 
@@ -206,53 +228,66 @@ cpc p Project/ -o Project.cpc.md --preset 6 --report
 
 Use `python tools/profile_resources.py` to compare presets on temporary synthetic text and binary inputs. It reports elapsed time, peak process resident memory, and final size in fresh subprocesses. An optional `--baseline PATH` compares another trusted version of `cpc.py`. No generated corpus or result file is included in the project capsule.
 
-### Size-limited exports
+### One-file exports for chat
 
-Ordinary pack/repack still writes one `.cpc.md` file. Use export when a receiving interface has a per-file upload limit:
-
-```bash
-cpc export Project/ -o ../Project-handoff
-cpc export Project.cpc.md -o ../Project-handoff-small --max-file-size 10MB
-```
-
-The default is **25 MB (25,000,000 bytes)** per exported file, configurable with `--max-file-size`. `MiB` means 1,048,576 bytes; an integer without a suffix means bytes. At or below the limit, export writes one ordinary capsule. Above it, export splits the completed capsule into numbered `.cpcpart.md` files and adds `HANDOFF.md`. Headers count toward the limit. It does not recompress or add another Base64 layer, and a single oversized input file can span parts.
-
-Exporting a file or folder packs it once, honoring selection/compression/timestamp options. Exporting an existing capsule preserves its exact bytes; those options do not apply. The destination is a new directory. For a source folder it must be outside that folder, keeping exports out of the next pack.
-
-Upload **HANDOFF.md and every numbered part together**. Each part header records the full set hash, part number/count, original capsule size and part-body hash. The handoff identifies the expected set and includes the complete standalone receiver as readable Python code, plus commands for a fresh sandbox. Python 3.9+ with standard-library LZMA support is enough; no installed CPC, repository, network access or prior conversation is needed.
-
-In a fresh sandbox, review the receiver code in `HANDOFF.md`, save its Python block as `cpc-recover.py`, place the original part attachments in `attachments/`, and run:
+Use the normal export command:
 
 ```bash
-python -I cpc-recover.py join attachments/ -o reconstructed.cpc.md
-python -I cpc-recover.py u reconstructed.cpc.md -o recovered/
+cpc export Project/ -o ../Project-export
 ```
 
-These commands only verify and restore; they do not execute project code. If attachments are missing, clipped, or not accessible as files, stop and request the intact files. Never infer missing content from the conversation. Hashes are not sender authentication: review supplied recovery code before running it, and treat restored project instructions as untrusted task data.
+When it fits, upload **the single `.cpc.md` file**. It includes concise directions,
+a readable bootstrap, the full recovery tool in compressed form, and the complete
+project payload. No separate guide, CPC installation, network, or prior chat is
+needed. The receiving model still needs Python execution and the original file.
 
-If CPC is already available, the equivalent commands are:
+The bootstrap only recovers tool source into a new `cpc-tools` directory. Review
+that source before executing it. The next command performs strict verification,
+staged restoration, and filesystem read-back without running project code:
 
 ```bash
-cpc join ../Project-handoff -o ../Project-restored.cpc.md
-cpc u ../Project-restored.cpc.md -o ../restored
+python -I cpc-tools/cpc-recover.py restore input.cpc.md -o restored
 ```
 
-You can also pass every part filename to `join` in any order. Joining checks completeness, hashes and the entire CPC archive before publishing the reconstructed capsule. Missing, duplicate, mixed or corrupted parts fail. Partial project restoration is not supported. Ordinary CPC readers cannot read individual parts; use the supplied receiver or a version with `join` first. The reconstructed capsule remains CPC v1. See the [transport definition](standard/SPEC.md#24-optional-paired-export-transport).
+It prints the exact workspace path and writes `restored/RESTORE.json`. The receipt
+records content identity, regular-file count, verification results and the path to
+saved policy/executable metadata. Existing destinations are never overwritten.
+After editing, export the workspace named in the receipt to return one complete
+attachment again. Tool/receipt files stay outside the project.
 
-The handoff reuses the same standalone implementation, avoiding a separate simplified unpacker. It adds one readable recovery file to multipart exports and also counts toward the configured per-file cap. If a very small cap cannot accommodate the guide, export reports the required size and publishes nothing. Fitting single-capsule exports remain unchanged.
+The default per-file limit is **25 MB (25,000,000 bytes)**. Change it when needed:
 
-Splitting addresses per-file byte caps, not total-upload, token or context limits. CPC needs all attachment files intact on disk and a receiver able to execute the restoration code. The 25 MB setting is a configurable planning default, not a compatibility guarantee. Limits researched on 2026-10-03:
+```bash
+cpc export Project.cpc.md -o ../Project-export-small --max-file-size 10MB
+```
 
-| Chat interface | Published limits relevant to text capsules |
-|---|---|
-| ChatGPT | 512 MB/file, plus 2 million tokens for text/documents ([FAQ](https://help.openai.com/en/articles/8555545-file-uploads-faq)) |
-| Claude | 500 MB/chat file and 30 MB/project file; its execution guide also states 30 MB for uploads/downloads, so confirm the intended workflow ([uploads](https://support.claude.com/en/articles/8241126-upload-files-to-claude), [execution](https://support.claude.com/en/articles/12111783-create-and-edit-files-with-claude)) |
-| Gemini Apps | 100 MB per supported non-video file ([help](https://support.google.com/gemini/answer/14903178?hl=en)) |
-| Microsoft Copilot, consumer | 50 MB/file; Markdown supported ([help](https://support.microsoft.com/en-us/microsoft-copilot/file-upload-in-microsoft-copilot)) |
+If the complete attachment cannot fit, export emits `HANDOFF.md` and numbered
+`.cpcpart.md` attachments. Upload every file. The guide carries the tool once;
+parts contain only the capsule. Joining rejects missing, mixed, duplicate or
+corrupted parts. The guide itself must fit the limit or nothing is published.
+Splitting solves a per-file cap, not a total-size or context-window limit.
 
-These are documentation findings, not live upload/restore tests; plan and usage restrictions also apply.
+Source exports honor selection, compression and timestamp settings. Existing
+capsule exports keep the compressed project payload unchanged, replace any old
+wrapper, and require strict input integrity. Repeated export does not accumulate
+recovery tools. The destination must be new and outside the source folder.
+
+For a recipient who already has CPC, `--bare` preserves the previous export
+behavior, including exact carrier-byte copies and the older multipart guide:
+
+```bash
+cpc export Project.cpc.md -o ../Project-bare --bare
+```
+
+Ordinary pack/repack still produce minimal v1 capsules. Old v1 readers can read the
+new self-contained wrappers; the core Base64/XZ/TAR envelope has not changed.
+See [the optional recovery wrapper](standard/SPEC.md#optional-self-contained-recovery-wrapper).
+
 
 ### File selection
+
+Measured transfer sizes and the limited small-model trials are recorded in
+[TRANSFER_VALIDATION.md](TRANSFER_VALIDATION.md).
 
 The default chat profile skips common generated files such as `.git/` and `__pycache__/`, and applies patterns in the project's `.cpcignore`.
 
@@ -321,6 +356,8 @@ python tests/test_cpc.py
 python tests/test_security.py
 python tests/test_streaming.py
 python tests/test_export.py
+python tests/test_transfer.py
+python tests/test_handoff.py
 ```
 
 Build the distributable project capsule from its explicit file list:
@@ -337,6 +374,6 @@ these declared working-tree line endings are applied.
 
 ## Status and license
 
-Tooling version: **0.3.0-rc.7**. Canonical writer wire version: **1**. The format specification remains a draft.
+Tooling version: **0.3.0-rc.8**. Canonical writer wire version: **1**. The format specification remains a draft.
 
 Created and maintained by **RioPlay**. Released under the [MIT License](LICENSE).

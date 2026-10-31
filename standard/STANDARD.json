@@ -1,6 +1,6 @@
 {
   "standard": "CPC",
-  "release": "0.3.0-rc.7",
+  "release": "0.3.0-rc.8",
   "spec_version": "0.3-draft",
   "wire_version": 1,
   "recipe": "b64>xz>tar",

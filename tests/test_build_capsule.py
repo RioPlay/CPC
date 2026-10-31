@@ -88,6 +88,14 @@ class ReleaseTests(unittest.TestCase):
         os.utime(source, ns=(stamp, stamp))
         self.check()
 
+    def test_stale_receiver_fails_even_when_project_bytes_match(self):
+        capsule = self.root/'CPC.cpc.md'
+        data = capsule.read_bytes()
+        marker = b'<!-- CPC-RECEIVER|1|b64>xz|'
+        offset = data.index(marker)+len(marker)
+        capsule.write_bytes(data[:offset]+b'0'*64+data[offset+64:])
+        self.assertIn('Release receiver mismatch', self.check(success=False))
+
     @unittest.skipUnless(shutil.which('git'), 'Git is required for checkout regression')
     def test_capsule_matches_with_either_autocrlf_setting(self):
         def git(*args):

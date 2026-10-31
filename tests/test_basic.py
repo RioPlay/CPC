@@ -74,10 +74,15 @@ class BasicTests(unittest.TestCase):
         code, out, err = self.cli('v', self.cap)
         self.assertEqual(code, 0, err)
         self.assertIn('metadata=unverified', out)
+        self.assertIn('CPC RESTORABLE', out)
+        self.assertNotIn('CPC PASS', out)
         self.assertEqual(self.cli('v', self.cap, '--strict')[0], 2)
         self.assertEqual(self.cli('u', self.cap, '-o', self.root/'strict', '--strict')[0], 2)
         self.assertFalse((self.root/'strict').exists())
-        self.assertEqual(self.cli(self.cap, '-o', self.root/'auto')[0], 0)
+        code, out, err = self.cli(self.cap, '-o', self.root/'auto')
+        self.assertEqual(code, 0, err)
+        self.assertIn('CPC RESTORED', out)
+        self.assertNotIn('CPC PASS', out)
 
     def test_versioned_capsules_restore_beside_original_and_roundtrip(self):
         project = self.root/'Project'
