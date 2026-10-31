@@ -56,8 +56,7 @@ class MultipartTests(unittest.TestCase):
             with self.assertRaises(Exception): m.parse_export_size(value)
         result=m.export_capsule(self.cap,self.root/'whole')
         self.assertFalse(result['split'])
-        self.assertEqual({p.name for p in (self.root/'whole').iterdir()},
-                         {self.cap.name, 'HANDOFF.md'})
+        self.assertEqual(list((self.root/'whole').iterdir()),[self.root/'whole'/self.cap.name])
         self.assertEqual((self.root/'whole'/self.cap.name).read_bytes(),self.cap.read_bytes())
 
     def test_exact_boundary_and_one_byte_over(self):
@@ -259,11 +258,13 @@ class MultipartTests(unittest.TestCase):
                 cold.mkdir()
                 attachments = cold/'attachments'
                 result = m.export_capsule(self.cap, attachments, limit)
-                # Both export sizes must supply the runnable receiver themselves.
-                guide = (attachments/'HANDOFF.md').read_text(encoding='utf-8')
-                if not result['split']:
-                    self.assertIn(self.cap.name, guide)
-                    self.assertIn('./attachments/input.cpc.md', guide)
+                # Single v1 capsules still need a separately supplied CLI. Exercise
+                # that existing path without implying it is a self-contained handoff.
+                if result['split']:
+                    guide = (attachments/'HANDOFF.md').read_text(encoding='utf-8')
+                else:
+                    guide = m.recovery_handoff(result['set_sha256'], 1,
+                                              result['original_bytes'], limit).decode('utf-8')
                 receiver = guide.split('````python\n', 1)[1].rsplit('````', 1)[0]
                 (cold/'cpc-recover.py').write_text(receiver, encoding='utf-8')
 
@@ -291,7 +292,7 @@ class MultipartTests(unittest.TestCase):
                 run('export', './updated.cpc.md', '-o', './return-files',
                     '--max-file-size', str(limit))
                 returned = cold/'return-files'
-                self.assertTrue((returned/'HANDOFF.md').is_file())
+                self.assertEqual((returned/'HANDOFF.md').is_file(), result['split'])
                 self.assertTrue(all(p.stat().st_size <= limit for p in returned.iterdir()))
                 if result['split']:
                     run('join', './return-files', '-o', './returned.cpc.md')

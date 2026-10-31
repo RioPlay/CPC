@@ -58,19 +58,16 @@ Ordinary `cpc u` now accepts intact transport archives with defective optional m
 
 ## How should an LLM return edited work?
 
-Use the supplied CLI's `handoff` command. It strictly verifies, compares the
-selected source, and checks a clean restore before publishing the return folder.
-Return every file in that folder: the capsule or all parts, `HANDOFF.md`, and
-`VALIDATION.json`. Every export now supplies the runnable guide, including small
-single-capsule exports. A bare `.cpc.md` still needs a reader; its compressed
-payload does not replace an accessible packer. If Python, LZMA, the supplied
-tool, or intact attachments are unavailable, report that limitation rather than
-reconstructing a capsule by hand.
+Use `cpc export WORKSPACE -o NEW_DIRECTORY`. A fitting export contains one
+self-contained `.cpc.md` with the project, receiver and restore instructions.
+Source exports verify the capsule, compare source contents and check a clean
+restore before publication. If splitting is required, return every produced
+file. Packaging does not execute application tests or authenticate a producer.
 
-The report records packaging checks, not application-test success or authenticated
-producer identity. Recipients should independently run strict verification.
-Explicit `--project-name` and `--project-version` label a handoff; automatic
-revision numbering and cross-chat coordination remain follow-up work.
+For an explicit named/versioned audit bundle, `cpc handoff` remains available;
+it intentionally produces a separate guide and validation report. A bare
+capsule from `pack`, `repack` or `export --bare` requires a separate reader.
+
 
 ## Who maintains CPC?
 

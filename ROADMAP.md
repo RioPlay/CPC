@@ -38,11 +38,12 @@ publish a complete return directory only after those checks pass. Optional
 The command emits a hash-bound audit report and explicitly marks application
 validation as not run. It is not signed producer attestation.
 
-Every export now includes the runnable `HANDOFF.md`, whether the capsule fits
-in one file or needs transport parts. Explicit CLI include/exclude rules travel
-in optional metadata and `--state` workspaces; comparison and repack reuse them.
-Basic recovery remains available, but incomplete metadata no longer receives a
-standalone PASS status. The v1 wire envelope and codecs remain unchanged.
+Normal export now puts the compressed receiver, readable bootstrap and concrete
+restore/return instructions in one attachment whenever it fits. The `restore`
+command verifies and reads back the workspace before publishing a receipt.
+The earlier named `handoff` audit-bundle mode remains optional. Explicit
+include/exclude rules travel in metadata/state and are retained on return.
+Basic-only metadata no longer receives a standalone PASS status.
 
 Review fixes halt source scanning on directory I/O errors and bind guide
 verification/restoration to the expected complete-carrier hash. Regressions
@@ -69,12 +70,9 @@ guide, or that Windows/macOS have passed this draft's CI matrix.
 - Cross-model handoff trials that record whether the supplied command was used,
   and independently validate the returned artifact rather than trusting prose.
 
-A self-contained Markdown handoff with the actual packer and one return
-command in the same single attachment remains a separate carrier-design task.
-The current guide-plus-capsule bundle already supplies the runnable packer and
-one return command without embedding executable instructions in the v1 carrier.
-A combined carrier needs an explicit design/version and fresh-sandbox tests.
-Keep splitting conditional on the complete export exceeding the configured limit.
+The single-attachment wrapper is implemented without changing the v1 project
+payload. Cold subprocess tests and two scoped Luna trials are documented in
+TRANSFER_VALIDATION.md. Broader repeated/cross-model testing remains open.
 
 No signatures, parent chains, deltas, new codecs or installation dependencies
 are required for this milestone. Hashes establish consistency with the sent
@@ -105,4 +103,4 @@ Completed locally on 2026-10-07:
   stateless round trip, multiple roots, malicious metadata, overwrite/backup,
   publication rollback, optional state and multipart transport.
 - No new runtime dependencies, codec changes, or automatic history tracking.
-  The separate self-contained carrier above remains unimplemented.
+  A later rc.8 increment adds the optional self-contained recovery wrapper.

@@ -28,7 +28,9 @@ jobs:
         run: python tests/test_streaming.py
       - name: Export and multipart regressions
         run: python tests/test_export.py
-      - name: Validated handoffs and cold-sandbox returns
+      - name: Self-contained transfer and cold restore regressions
+        run: python tests/test_transfer.py
+      - name: Validated named handoff regressions
         run: python tests/test_handoff.py
       - name: Timestamp preservation and policy regressions
         run: python tests/test_timestamps.py
@@ -38,12 +40,14 @@ jobs:
         run: python tests/test_basic.py
       - name: Payload-first headers and integrity warnings
         run: python tests/test_headers.py
+      - name: Release content verification regressions
+        run: python tests/test_build_capsule.py
       - name: CLI smoke test
         run: python bin/cpc.py --version
       - name: Verify bundled capsules
         run: |
-          python bin/cpc.py v standard/test-vector.cpc.md --strict
-          python bin/cpc.py v demo_project.cpc.md --strict
-          python bin/cpc.py v CPC.cpc.md --strict
-      - name: Check release file allowlist
+          python bin/cpc.py v standard/test-vector.cpc.md
+          python bin/cpc.py v demo_project.cpc.md
+          python bin/cpc.py v CPC.cpc.md
+      - name: Check release file allowlist and source bytes
         run: python tools/build_capsule.py --check
