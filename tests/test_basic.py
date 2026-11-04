@@ -28,12 +28,12 @@ class BasicTests(unittest.TestCase):
         self.root = Path(temp.name)
         self.cap = self.root/'return.cpc.md'
 
-    def archive(self, entries):
+    def archive(self, entries, stamp=1735689600):
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode='w', format=tarfile.PAX_FORMAT) as tf:
             for name, contents in entries:
                 m = tarfile.TarInfo(name)
-                m.mtime = 1735689600
+                m.mtime = stamp
                 m.mode = 0o755 if contents is None else 0o644
                 if contents is None:
                     m.type = tarfile.DIRTYPE
@@ -48,6 +48,20 @@ class BasicTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
             code = cpc.main(list(map(str, args)))
         return code, out.getvalue(), err.getvalue()
+
+    def test_unspecified_zero_dates_restore_fresh_unless_explicitly_preserved(self):
+        self.archive([('Project', None), ('Project/a.txt', b'a')], stamp=0)
+        before = self.cap.read_bytes()
+        for verb in (('u', self.cap), (self.cap,)):
+            parent = self.root/('explicit' if len(verb) == 2 else 'implicit')
+            code, _, err = self.cli(*verb, '-o', parent)
+            self.assertEqual(code, 0, err)
+            for path in (parent/'return', parent/'return/a.txt'):
+                self.assertGreater(path.stat().st_mtime_ns, 1735689600 * 10**9)
+        code, _, err = self.cli('u', self.cap, '-o', self.root/'epoch', '--preserve-times')
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.root/'epoch/return/a.txt').stat().st_mtime_ns, 0)
+        self.assertEqual(self.cap.read_bytes(), before)
 
     def test_missing_metadata_implied_root_and_clean_roundtrip(self):
         self.archive([('Project/src/main.py', b'print(1)\n'), ('Project/empty', None)])

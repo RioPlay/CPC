@@ -166,6 +166,8 @@ Recovery requires exactly one marker-delimited payload, valid Base64, a complete
 
 New packs **preserve file and directory modification times by default**, including fractional seconds. Restore applies dates in staging before publication. Repack uses current filesystem dates, inheriting saved policy only when optional adjacent state exists. Restored-source export also inherits optional state; exporting an existing capsule keeps its bytes intact. Without state, repack/export use preservation by default; select normalization explicitly when needed.
 
+When CPC metadata is missing or invalid and every user entry has a zero TAR date, unpack and recovery treat those dates as unspecified and create files and directories with fresh filesystem dates. This avoids restoring hand-built capsules as January 1970 merely because their generator left TAR timestamps unset. Use `--preserve-times` to explicitly retain those zeros. Mixed/nonzero dates are preserved; a fully valid capsule's timestamp policy always takes precedence, including intentional epoch dates.
+
 For a smaller, timestamp-independent capsule, explicitly choose normalization:
 
 ```bash
