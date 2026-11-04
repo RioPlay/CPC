@@ -98,6 +98,24 @@ class TimestampTests(unittest.TestCase):
         self.assertEqual(self.tree_times(Path(out)), expected)
         self.assertEqual((Path(out)/'source.txt').read_bytes(), b'edited')
 
+    def test_verified_preservation_keeps_even_all_zero_original_dates(self):
+        for p in [self.project]+list(self.project.rglob('*')):
+            os.utime(p, ns=(0, 0))
+        cpc.pack(str(self.project), str(self.cap))
+        restored, _, _ = cpc.unpack(str(self.cap), str(self.root/'restored'))
+        self.assertTrue(all(ns == 0 for ns in self.tree_times(Path(restored)).values()))
+
+    def test_fallback_does_not_discard_zero_dates_in_a_mixed_archive(self):
+        cpc.pack(str(self.project), str(self.cap))
+        bad = self.root/'unverified.cpc.md'
+        def edit(member, data):
+            return b'invalid manifest' if member.name == '.cpc/manifest' else data
+        self.mutate(bad, edit)
+        with redirect_stderr(io.StringIO()):
+            restored, _, info = cpc.unpack(str(bad), str(self.root/'restore'))
+        self.assertFalse(info['metadata_valid'])
+        self.assertEqual(self.tree_times(Path(restored)), self.times)
+
     def test_normalized_mode_is_stable_and_inherited(self):
         self.cli('p', self.project, '-o', self.cap, '--normalize-times')
         for p in [self.project]+list(self.project.rglob('*')):

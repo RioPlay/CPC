@@ -37,7 +37,7 @@ class RecoveryTests(unittest.TestCase):
         self.cap.write_bytes(('#CPC|1|b64>xz>tar|'+hashlib.sha256(packed).hexdigest()
                               +'\n<CPC>\n').encode()+base64.b64encode(packed)+b'\n</CPC>\n')
 
-    def archive(self, entries):
+    def archive(self, entries, stamp=STAMP):
         raw = io.BytesIO()
         with tarfile.open(fileobj=raw, mode='w', format=tarfile.PAX_FORMAT) as tf:
             for name, data in entries:
@@ -47,7 +47,7 @@ class RecoveryTests(unittest.TestCase):
                         m.type = tarfile.DIRTYPE
                 else:
                     m.size = len(data)
-                cpc.set_member_mtime(m, STAMP)
+                cpc.set_member_mtime(m, stamp)
                 tf.addfile(m, None if data is None else io.BytesIO(data))
         self.carrier(raw.getvalue())
         return raw.getvalue()
@@ -65,6 +65,17 @@ class RecoveryTests(unittest.TestCase):
             self.recover()
         self.assertFalse(self.output.exists())
         self.assertFalse(list(self.root.glob('.cpc-stage-*')))
+
+    def test_all_zero_unverified_dates_default_to_fresh_dates(self):
+        self.archive([('Project', None), ('Project/a', b'a')], stamp=0)
+        result = self.recover()
+        self.assertEqual(result['mtime'], 'normalize')
+        self.assertGreater((self.output/'files/Project/a').stat().st_mtime_ns, STAMP)
+        self.assertGreater((self.output/'files/Project').stat().st_mtime_ns, STAMP)
+        self.output = self.root/'preserved'
+        result = self.recover(mtime='preserve')
+        self.assertEqual(result['mtime'], 'preserve')
+        self.assertEqual((self.output/'files/Project/a').stat().st_mtime_ns, 0)
 
     def test_missing_metadata_parents_multiple_roots_and_roundtrip(self):
         executable = tarfile.TarInfo('Project/bin/run.sh')

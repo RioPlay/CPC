@@ -928,6 +928,19 @@ def recompute_content_id(raw, expected):
             h.update(b"\0")
     return h.hexdigest()
 
+def fallback_timestamp_policy(members):
+    """Treat all-zero, unverified TAR dates as unspecified by default."""
+    payload = [m for m in members if m.name.rstrip('/') != META_ROOT
+               and not m.name.startswith(META_ROOT + '/')]
+    try:
+        if payload and all(member_mtime_ns(m) == 0 for m in payload):
+            return "normalize"
+    except CPCError:
+        # Do not hide malformed dates: preservation validates them on restore.
+        pass
+    return "preserve"
+
+
 def basic_archive_metadata(raw, members):
     """Describe actual TAR contents without trusting optional CPC records."""
     payload = [m for m in members if m.name.rstrip('/') != META_ROOT
@@ -951,7 +964,7 @@ def basic_archive_metadata(raw, members):
                               bool(m.mode & 0o111) if m.isfile() else False, digest)
     root_file = any(m.name == root and m.isfile() for m in payload)
     state = {"root": root, "type": "file" if root_file else "dir",
-             "profile": "archive", "mtime": "preserve"}
+             "profile": "archive", "mtime": fallback_timestamp_policy(members)}
     return state, expected
 
 
@@ -1101,7 +1114,8 @@ def unpack(capsule, output=None, force=False, backup=False, selected=None, mtime
         warn_metadata(info)
         if mtime is not None:
             timestamp_policy({"mtime": mtime})
-            if mtime == "preserve" and timestamp_policy(info["state"]) != "preserve":
+            if (mtime == "preserve" and info["metadata_valid"]
+                    and timestamp_policy(info["state"]) != "preserve"):
                 raise CPCError("TIMESTAMPS_UNAVAILABLE: original dates were not recorded")
             info["state"] = dict(info["state"], mtime=mtime)
         return unpack_verified(capsule, info, output, force, backup, selected, keep_state, original_root)
@@ -1155,7 +1169,8 @@ def recover(capsule, output, mtime=None):
             failure = str(error)
         if mtime == "preserve" and verified_state and timestamp_policy(verified_state) != "preserve":
             raise CPCError("TIMESTAMPS_UNAVAILABLE: original dates were not recorded")
-        policy = mtime or (timestamp_policy(verified_state) if verified_state else "preserve")
+        policy = mtime or (timestamp_policy(verified_state) if verified_state
+                           else fallback_timestamp_policy(members))
         payload, metadata = [], []
         for member in members:
             name = member.name.rstrip("/") if member.isdir() else member.name

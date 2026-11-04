@@ -220,6 +220,8 @@ Under `normalize`, all archive member times are zero. Readers of normalized caps
 
 The reference reader bounds dates to UTC years 0001 through 9999; a filesystem can support a narrower range and coarser precision. File content identity excludes timestamps. Timestamp-only changes can change capsule bytes without changing `content_id`. The wire header and compression chain remain v1; older reference readers ignore the new state key and do not restore modification times.
 
+When optional CPC metadata cannot be verified, the reference reader treats an all-zero set of user TAR modification times as unspecified and uses fresh filesystem dates by default. Internal `.cpc` entries are excluded from this decision. An explicit preservation override retains those zeros. Mixed/nonzero user dates are preserved. Verified timestamp policies take precedence, so an explicitly preserved epoch date remains an epoch date. This fallback changes no archive bytes or validation requirements.
+
 Recommended canonical modes:
 
 ```text
