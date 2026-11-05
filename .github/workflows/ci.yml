@@ -40,6 +40,8 @@ jobs:
         run: python tests/test_headers.py
       - name: Release content verification regressions
         run: python tests/test_build_capsule.py
+      - name: Installer update and command selection regressions
+        run: python tests/test_install.py
       - name: CLI smoke test
         run: python bin/cpc.py --version
       - name: Verify bundled capsules
