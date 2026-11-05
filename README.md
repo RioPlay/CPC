@@ -41,6 +41,10 @@ On Linux or macOS:
 
 Add the directory printed by the installer to your `PATH` if needed. You can then use `cpc` from any folder.
 
+Re-running the installer updates the copy in that installation directory. It prints the source path, installed version and SHA256 fingerprint, and warns if PATH selects a different `cpc`. It does not change PATH or overwrite other installations. To update a custom location, pass `--prefix /path/to/bin` to `install.sh` (or use `python bootstrap.py --prefix /path/to/bin`). The install wrappers also forward `--uninstall` to remove the selected installation.
+
+On Linux/macOS, run `hash -r; type cpc` in your current shell after installing to clear a cached command path and check for an alias, function or older copy. In PowerShell, use `Get-Command cpc -All`. An unchanged `cpc --version` alone does not prove an old installation: development fixes can share a release number. Compare the installer's SHA256 with the source and installed `cpc.py` bytes when checking a particular update.
+
 ## Basic workflow
 
 Use `cpc <object>` for automatic handling:
